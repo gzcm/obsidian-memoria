@@ -2333,3 +2333,75 @@
 .memoria-confirm .memoria-modal-btns .mod-warning:hover {
   background: color-mix(in srgb, var(--text-error, #e03131) 85%, #000);
 }
+
+/* v1.1.7+: 输入栏时间芯片与选择器 */
+.memoria-time-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  user-select: none;
+}
+.memoria-time-chip:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.memoria-time-chip.is-overridden {
+  color: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+.memoria-time-picker {
+  position: fixed;
+  z-index: 999;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 10px;
+  user-select: none;
+}
+.memoria-time-picker-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-normal);
+  text-align: center;
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.memoria-time-picker-cols {
+  display: flex;
+  gap: 8px;
+}
+.memoria-time-picker-col {
+  display: flex;
+  flex-direction: column;
+  height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  scrollbar-width: thin;
+}
+.memoria-time-picker-cell {
+  padding: 4px 14px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.08s;
+}
+.memoria-time-picker-cell:hover {
+  background: var(--background-modifier-hover);
+}
+.memoria-time-picker-cell.is-active {
+  background: color-mix(in srgb, var(--interactive-accent) 25%, transparent);
+  color: var(--text-normal);
+  font-weight: 600;
+}

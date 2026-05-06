@@ -30,12 +30,15 @@ export class MemoriaView extends ItemView {
   private tagSuggest: TagSuggest | null = null;
   private overviewMode: "heatmap" | "calendar" = "heatmap";
   private editingMemo: Memo | null = null;
+  private timeOverride: string | null = null;
+  private timeTickHandle: number | null = null;
 
   private sidebarEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private searchEl!: HTMLInputElement;
   private listEl!: HTMLElement;
   private editBannerEl: HTMLElement | null = null;
+  private timeChipEl: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf, store: MemoStore, settings: MemoriaSettings) {
     super(leaf);
@@ -67,6 +70,7 @@ export class MemoriaView extends ItemView {
     this.unsubscribe?.();
     this.tagSuggest?.destroy();
     this.tagSuggest = null;
+    this.stopTimeTick();
     this.childComponent.unload();
   }
 
@@ -213,8 +217,138 @@ export class MemoriaView extends ItemView {
     cancelBtn.addEventListener("click", () => this.exitEditMode());
     this.editBannerEl = cancelBtn;
 
+    this.timeChipEl = submitWrap.createDiv({
+      cls: "memoria-time-chip",
+      attr: { title: "左键选择时间 · 右键重置为当前时间" },
+    });
+    this.timeChipEl.addEventListener("click", e => {
+      e.stopPropagation();
+      this.openTimePicker();
+    });
+    this.timeChipEl.addEventListener("contextmenu", e => {
+      e.preventDefault();
+      this.timeOverride = null;
+      this.refreshTimeChip();
+    });
+    this.refreshTimeChip();
+    this.timeTickHandle = window.setInterval(() => {
+      if (this.timeOverride === null) this.refreshTimeChip();
+    }, 30_000);
+
     const sendBtn = submitWrap.createEl("button", { cls: "memoria-submit-btn", text: "发送" });
     sendBtn.addEventListener("click", () => this.submitMemo());
+  }
+
+  private getEffectiveDate(): Date {
+    const now = new Date();
+    if (this.timeOverride === null) return now;
+    const [h, m] = this.timeOverride.split(":").map(n => parseInt(n, 10));
+    const d = new Date(now);
+    d.setHours(h, m, 0, 0);
+    return d;
+  }
+
+  private refreshTimeChip() {
+    if (!this.timeChipEl) return;
+    const d = this.getEffectiveDate();
+    const hh = d.getHours().toString().padStart(2, "0");
+    const mm = d.getMinutes().toString().padStart(2, "0");
+    this.timeChipEl.setText(`${hh}:${mm}`);
+    this.timeChipEl.toggleClass("is-overridden", this.timeOverride !== null);
+  }
+
+  private stopTimeTick() {
+    if (this.timeTickHandle !== null) {
+      window.clearInterval(this.timeTickHandle);
+      this.timeTickHandle = null;
+    }
+  }
+
+  private openTimePicker() {
+    const existing = document.querySelector(".memoria-time-picker");
+    if (existing) { existing.remove(); return; }
+
+    const now = new Date();
+    let h: number;
+    let m: number;
+    if (this.timeOverride !== null) {
+      const [oh, om] = this.timeOverride.split(":").map(n => parseInt(n, 10));
+      h = oh; m = om;
+    } else {
+      h = now.getHours();
+      m = now.getMinutes();
+    }
+
+    const picker = document.body.createDiv({ cls: "memoria-time-picker" });
+    const label = picker.createDiv({ cls: "memoria-time-picker-label" });
+    const cols = picker.createDiv({ cls: "memoria-time-picker-cols" });
+    const hourCol = cols.createDiv({ cls: "memoria-time-picker-col memoria-time-picker-hours" });
+    const minuteCol = cols.createDiv({ cls: "memoria-time-picker-col memoria-time-picker-minutes" });
+
+    const hourCells: HTMLElement[] = [];
+    const minuteCells: HTMLElement[] = [];
+
+    const updateLabel = () => {
+      label.setText(`${h.toString().padStart(2, "0")} : ${m.toString().padStart(2, "0")}`);
+    };
+    const commit = () => {
+      this.timeOverride = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+      this.refreshTimeChip();
+    };
+
+    for (let i = 0; i < 24; i++) {
+      const cell = hourCol.createDiv({
+        cls: "memoria-time-picker-cell" + (i === h ? " is-active" : ""),
+        text: i.toString().padStart(2, "0"),
+      });
+      cell.addEventListener("click", () => {
+        h = i;
+        hourCells.forEach((c, j) => c.toggleClass("is-active", j === i));
+        updateLabel();
+        commit();
+      });
+      hourCells.push(cell);
+    }
+    for (let i = 0; i < 60; i++) {
+      const cell = minuteCol.createDiv({
+        cls: "memoria-time-picker-cell" + (i === m ? " is-active" : ""),
+        text: i.toString().padStart(2, "0"),
+      });
+      cell.addEventListener("click", () => {
+        m = i;
+        minuteCells.forEach((c, j) => c.toggleClass("is-active", j === i));
+        updateLabel();
+        commit();
+      });
+      minuteCells.push(cell);
+    }
+    updateLabel();
+
+    // 弹层定位：以芯片为锚，弹在它上方
+    const anchor = this.timeChipEl;
+    if (anchor) {
+      const rect = anchor.getBoundingClientRect();
+      // 先放上去再读尺寸，确保 picker 完全可见
+      picker.style.left = `${Math.round(rect.left)}px`;
+      picker.style.top = `${Math.round(rect.top - 8)}px`;
+      picker.style.transform = "translateY(-100%)";
+    }
+
+    // 滚动居中到当前选中行
+    requestAnimationFrame(() => {
+      hourCells[h]?.scrollIntoView({ block: "center" });
+      minuteCells[m]?.scrollIntoView({ block: "center" });
+    });
+
+    setTimeout(() => {
+      const onOutside = (e: MouseEvent) => {
+        if (!picker.contains(e.target as Node) && e.target !== anchor && !anchor?.contains(e.target as Node)) {
+          picker.remove();
+          document.removeEventListener("mousedown", onOutside, true);
+        }
+      };
+      document.addEventListener("mousedown", onOutside, true);
+    }, 0);
   }
 
   private insertAtCursor(text: string) {
@@ -477,7 +611,7 @@ export class MemoriaView extends ItemView {
         new Notice("✓ 已更新");
         this.exitEditMode();
       } else {
-        await this.store.addMemo(text);
+        await this.store.addMemo(text, this.getEffectiveDate());
         new Notice("✓ 已记下");
         if (this.settings.clearAfterSave) {
           this.inputEl.value = "";
@@ -519,10 +653,13 @@ export class MemoriaView extends ItemView {
       this.editBannerEl.removeClass("memoria-hidden");
       card?.addClass("is-editing");
       this.inputEl.setAttr("placeholder", `编辑 ${this.editingMemo.date} ${this.editingMemo.time} 的笔记（Esc 取消）`);
+      this.timeChipEl?.addClass("memoria-hidden");
     } else {
       this.editBannerEl.addClass("memoria-hidden");
       card?.removeClass("is-editing");
       this.inputEl.setAttr("placeholder", "此刻，你在想什么？");
+      this.timeChipEl?.removeClass("memoria-hidden");
+      this.refreshTimeChip();
     }
   }
 

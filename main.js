@@ -880,7 +880,10 @@ var _MemoriaView = class _MemoriaView extends import_obsidian5.ItemView {
     this.tagSuggest = null;
     this.overviewMode = "heatmap";
     this.editingMemo = null;
+    this.timeOverride = null;
+    this.timeTickHandle = null;
     this.editBannerEl = null;
+    this.timeChipEl = null;
     this.store = store;
     this.settings = settings;
     this.pageLimit = this.getInitialPageLimit();
@@ -916,6 +919,7 @@ var _MemoriaView = class _MemoriaView extends import_obsidian5.ItemView {
     (_a = this.unsubscribe) == null ? void 0 : _a.call(this);
     (_b = this.tagSuggest) == null ? void 0 : _b.destroy();
     this.tagSuggest = null;
+    this.stopTimeTick();
     this.childComponent.unload();
   }
   buildLayout() {
@@ -1053,8 +1057,127 @@ var _MemoriaView = class _MemoriaView extends import_obsidian5.ItemView {
     const cancelBtn = submitWrap.createEl("button", { cls: "memoria-cancel-btn memoria-hidden", text: "\u53D6\u6D88" });
     cancelBtn.addEventListener("click", () => this.exitEditMode());
     this.editBannerEl = cancelBtn;
+    this.timeChipEl = submitWrap.createDiv({
+      cls: "memoria-time-chip",
+      attr: { title: "\u5DE6\u952E\u9009\u62E9\u65F6\u95F4 \xB7 \u53F3\u952E\u91CD\u7F6E\u4E3A\u5F53\u524D\u65F6\u95F4" }
+    });
+    this.timeChipEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.openTimePicker();
+    });
+    this.timeChipEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.timeOverride = null;
+      this.refreshTimeChip();
+    });
+    this.refreshTimeChip();
+    this.timeTickHandle = window.setInterval(() => {
+      if (this.timeOverride === null) this.refreshTimeChip();
+    }, 3e4);
     const sendBtn = submitWrap.createEl("button", { cls: "memoria-submit-btn", text: "\u53D1\u9001" });
     sendBtn.addEventListener("click", () => this.submitMemo());
+  }
+  getEffectiveDate() {
+    const now = /* @__PURE__ */ new Date();
+    if (this.timeOverride === null) return now;
+    const [h, m] = this.timeOverride.split(":").map((n) => parseInt(n, 10));
+    const d = new Date(now);
+    d.setHours(h, m, 0, 0);
+    return d;
+  }
+  refreshTimeChip() {
+    if (!this.timeChipEl) return;
+    const d = this.getEffectiveDate();
+    const hh = d.getHours().toString().padStart(2, "0");
+    const mm = d.getMinutes().toString().padStart(2, "0");
+    this.timeChipEl.setText(`${hh}:${mm}`);
+    this.timeChipEl.toggleClass("is-overridden", this.timeOverride !== null);
+  }
+  stopTimeTick() {
+    if (this.timeTickHandle !== null) {
+      window.clearInterval(this.timeTickHandle);
+      this.timeTickHandle = null;
+    }
+  }
+  openTimePicker() {
+    const existing = document.querySelector(".memoria-time-picker");
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    const now = /* @__PURE__ */ new Date();
+    let h;
+    let m;
+    if (this.timeOverride !== null) {
+      const [oh, om] = this.timeOverride.split(":").map((n) => parseInt(n, 10));
+      h = oh;
+      m = om;
+    } else {
+      h = now.getHours();
+      m = now.getMinutes();
+    }
+    const picker = document.body.createDiv({ cls: "memoria-time-picker" });
+    const label = picker.createDiv({ cls: "memoria-time-picker-label" });
+    const cols = picker.createDiv({ cls: "memoria-time-picker-cols" });
+    const hourCol = cols.createDiv({ cls: "memoria-time-picker-col memoria-time-picker-hours" });
+    const minuteCol = cols.createDiv({ cls: "memoria-time-picker-col memoria-time-picker-minutes" });
+    const hourCells = [];
+    const minuteCells = [];
+    const updateLabel = () => {
+      label.setText(`${h.toString().padStart(2, "0")} : ${m.toString().padStart(2, "0")}`);
+    };
+    const commit = () => {
+      this.timeOverride = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+      this.refreshTimeChip();
+    };
+    for (let i = 0; i < 24; i++) {
+      const cell = hourCol.createDiv({
+        cls: "memoria-time-picker-cell" + (i === h ? " is-active" : ""),
+        text: i.toString().padStart(2, "0")
+      });
+      cell.addEventListener("click", () => {
+        h = i;
+        hourCells.forEach((c, j) => c.toggleClass("is-active", j === i));
+        updateLabel();
+        commit();
+      });
+      hourCells.push(cell);
+    }
+    for (let i = 0; i < 60; i++) {
+      const cell = minuteCol.createDiv({
+        cls: "memoria-time-picker-cell" + (i === m ? " is-active" : ""),
+        text: i.toString().padStart(2, "0")
+      });
+      cell.addEventListener("click", () => {
+        m = i;
+        minuteCells.forEach((c, j) => c.toggleClass("is-active", j === i));
+        updateLabel();
+        commit();
+      });
+      minuteCells.push(cell);
+    }
+    updateLabel();
+    const anchor = this.timeChipEl;
+    if (anchor) {
+      const rect = anchor.getBoundingClientRect();
+      picker.style.left = `${Math.round(rect.left)}px`;
+      picker.style.top = `${Math.round(rect.top - 8)}px`;
+      picker.style.transform = "translateY(-100%)";
+    }
+    requestAnimationFrame(() => {
+      var _a, _b;
+      (_a = hourCells[h]) == null ? void 0 : _a.scrollIntoView({ block: "center" });
+      (_b = minuteCells[m]) == null ? void 0 : _b.scrollIntoView({ block: "center" });
+    });
+    setTimeout(() => {
+      const onOutside = (e) => {
+        if (!picker.contains(e.target) && e.target !== anchor && !(anchor == null ? void 0 : anchor.contains(e.target))) {
+          picker.remove();
+          document.removeEventListener("mousedown", onOutside, true);
+        }
+      };
+      document.addEventListener("mousedown", onOutside, true);
+    }, 0);
   }
   insertAtCursor(text) {
     var _a, _b;
@@ -1331,7 +1454,7 @@ ${indent}${marker}`);
         new import_obsidian5.Notice("\u2713 \u5DF2\u66F4\u65B0");
         this.exitEditMode();
       } else {
-        await this.store.addMemo(text);
+        await this.store.addMemo(text, this.getEffectiveDate());
         new import_obsidian5.Notice("\u2713 \u5DF2\u8BB0\u4E0B");
         if (this.settings.clearAfterSave) {
           this.inputEl.value = "";
@@ -1363,16 +1486,20 @@ ${indent}${marker}`);
     this.autoResizeInput();
   }
   updateEditBanner() {
+    var _a, _b;
     if (!this.editBannerEl) return;
     const card = this.inputEl.closest(".memoria-input-card");
     if (this.editingMemo) {
       this.editBannerEl.removeClass("memoria-hidden");
       card == null ? void 0 : card.addClass("is-editing");
       this.inputEl.setAttr("placeholder", `\u7F16\u8F91 ${this.editingMemo.date} ${this.editingMemo.time} \u7684\u7B14\u8BB0\uFF08Esc \u53D6\u6D88\uFF09`);
+      (_a = this.timeChipEl) == null ? void 0 : _a.addClass("memoria-hidden");
     } else {
       this.editBannerEl.addClass("memoria-hidden");
       card == null ? void 0 : card.removeClass("is-editing");
       this.inputEl.setAttr("placeholder", "\u6B64\u523B\uFF0C\u4F60\u5728\u60F3\u4EC0\u4E48\uFF1F");
+      (_b = this.timeChipEl) == null ? void 0 : _b.removeClass("memoria-hidden");
+      this.refreshTimeChip();
     }
   }
   renderAll() {
