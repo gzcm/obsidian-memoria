@@ -1,6 +1,7 @@
 import { ItemView, setIcon, WorkspaceLeaf } from "obsidian";
 import { Memo, RESERVED_TAGS, VIEW_TYPE_STATS } from "./types";
 import { MemoStore } from "./store";
+import { t } from "./i18n";
 
 export class MemoriaStatsView extends ItemView {
   private store: MemoStore;
@@ -31,10 +32,10 @@ export class MemoriaStatsView extends ItemView {
 
     const titleBar = el.createDiv({ cls: "mstat-pagetitle" });
     titleBar.createSpan({ cls: "mstat-pagetitle-icon", text: "📊" });
-    titleBar.createSpan({ cls: "mstat-pagetitle-text", text: "Memoria 数据报告" });
+    titleBar.createSpan({ cls: "mstat-pagetitle-text", text: t("toolbar.statsReport") });
 
     if (this.memos.length === 0) {
-      el.createEl("p", { text: "还没有笔记，赶紧去写一条吧 ✨", cls: "mstat-empty-page" });
+      el.createEl("p", { text: t("empty.default"), cls: "mstat-empty-page" });
       return;
     }
 
@@ -53,10 +54,10 @@ export class MemoriaStatsView extends ItemView {
     const activeDays = new Set(this.memos.map(m => m.date)).size;
     const oldest = [...this.memos].sort((a, b) => a.datetime.getTime() - b.datetime.getTime())[0];
     const spanDays = Math.floor((Date.now() - oldest.datetime.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    this.renderBigNum(section, this.memos.length, "条笔记");
+    this.renderBigNum(section, this.memos.length, t("stats.memos"));
     this.renderBigNum(section, charCount, "字");
-    this.renderBigNum(section, activeDays, "活跃天");
-    this.renderBigNum(section, spanDays, "总跨度");
+    this.renderBigNum(section, activeDays, t("stats.days"));
+    this.renderBigNum(section, spanDays, t("stats.dailyGoal"));
   }
 
   private renderBigNum(parent: HTMLElement, num: number, label: string) {

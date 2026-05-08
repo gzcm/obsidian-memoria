@@ -1,22 +1,33 @@
 import { App, getAllTags, setIcon } from "obsidian";
 
+/** v2.0.3: 带缓存的标签联想，修复 IME 组合态冲突 */
 export class TagSuggest {
+  private static readonly CACHE_TTL_MS = 30_000;
+
   private dropdown: HTMLElement | null = null;
   private items: string[] = [];
   private active = 0;
   private rangeStart = 0;
+  private cachedTags: { name: string; count: number }[] | null = null;
+  private cacheTime = 0;
+  private metaChangeRef: { unref: () => void } | null = null;
 
   constructor(private app: App, private textarea: HTMLTextAreaElement) {
     this.textarea.addEventListener("input", this.handleInput);
     this.textarea.addEventListener("keydown", this.handleKeydown, true);
     this.textarea.addEventListener("blur", this.handleBlur);
     this.textarea.addEventListener("scroll", () => this.close());
+
+    // 监听 metadataCache 变化以刷新缓存
+    const ref = this.app.metadataCache.on("changed", () => { this.cachedTags = null; });
+    this.metaChangeRef = { unref: () => this.app.metadataCache.offref(ref) };
   }
 
   destroy() {
     this.textarea.removeEventListener("input", this.handleInput);
     this.textarea.removeEventListener("keydown", this.handleKeydown, true);
     this.textarea.removeEventListener("blur", this.handleBlur);
+    if (this.metaChangeRef) { this.metaChangeRef.unref(); this.metaChangeRef = null; }
     this.close();
   }
 
@@ -36,6 +47,8 @@ export class TagSuggest {
   };
 
   private handleKeydown = (e: KeyboardEvent) => {
+    // v2.0.6: IME 组合态期间不处理
+    if (e.isComposing || e.keyCode === 229) return;
     if (!this.dropdown) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -76,7 +89,11 @@ export class TagSuggest {
     return null;
   }
 
+  /** v2.0.3: 带 30s TTL 缓存的标签收集 */
   private collectAllTags(): { name: string; count: number }[] {
+    if (this.cachedTags && Date.now() - this.cacheTime < TagSuggest.CACHE_TTL_MS) {
+      return this.cachedTags;
+    }
     const counts = new Map<string, number>();
     const cache = this.app.metadataCache;
     for (const file of this.app.vault.getMarkdownFiles()) {
@@ -87,9 +104,12 @@ export class TagSuggest {
         if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
       }
     }
-    return [...counts.entries()]
+    const result = [...counts.entries()]
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count);
+    this.cachedTags = result;
+    this.cacheTime = Date.now();
+    return result;
   }
 
   private matchTags(tags: { name: string; count: number }[], query: string): string[] {
@@ -127,7 +147,8 @@ export class TagSuggest {
     if (!this.dropdown) return;
     const items = this.dropdown.querySelectorAll(".memoria-tag-suggest-item");
     items.forEach((el, i) => el.toggleClass("active", i === this.active));
-    (items[this.active] as HTMLElement)?.scrollIntoView({ block: "nearest" });
+    const activeItem = items[this.active] as HTMLElement | undefined;
+    activeItem?.scrollIntoView({ block: "nearest" });
   }
 
   private position() {

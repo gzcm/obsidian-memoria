@@ -1,10 +1,12 @@
 import { Notice, Plugin, TFile } from "obsidian";
-import { DEFAULT_SETTINGS, MemoriaSettings, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS } from "./types";
+import { DEFAULT_SETTINGS, MemoriaSettings, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS, VIEW_TYPE_YEAR } from "./types";
 import { MemoStore } from "./store";
 import { MemoriaView } from "./view";
 import { MemoriaStatsView } from "./stats-view";
+import { MemoriaYearView } from "./year-view";
 import { MemoriaSettingTab } from "./settings";
 import { buildMemoBlock } from "./parser";
+import { setLang, t } from "./i18n";
 
 export default class MemoriaPlugin extends Plugin {
   settings!: MemoriaSettings;
@@ -12,19 +14,24 @@ export default class MemoriaPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
+
+    // v2.0.3: 初始化语言
+    setLang(this.settings.language);
+
     this.store = new MemoStore(this.app, this.settings);
 
-    this.registerView(VIEW_TYPE_MEMORIA, leaf => new MemoriaView(leaf, this.store, this.settings));
+    this.registerView(VIEW_TYPE_MEMORIA, leaf => new MemoriaView(leaf, this.store, this.settings, () => this.saveSettings()));
     this.registerView(VIEW_TYPE_STATS, leaf => new MemoriaStatsView(leaf, this.store));
+    this.registerView(VIEW_TYPE_YEAR, leaf => new MemoriaYearView(leaf, this.store));
 
-    this.addRibbonIcon("feather", "打开 Memoria", () => this.activateView());
+    this.addRibbonIcon("feather", t("toolbar.more"), () => this.activateView());
 
-    this.addCommand({ id: "open-memoria", name: "打开 Memoria 面板", callback: () => this.activateView() });
-    this.addCommand({ id: "open-memoria-stats", name: "打开数据报告", callback: () => this.activateStatsView() });
-    this.addCommand({ id: "memoria-quick-capture", name: "快速记录（弹窗）", callback: () => this.quickCapture() });
+    this.addCommand({ id: "open-memoria", name: t("toolbar.more"), callback: () => this.activateView() });
+    this.addCommand({ id: "open-memoria-stats", name: t("toolbar.statsReport"), callback: () => this.activateStatsView() });
+    this.addCommand({ id: "memoria-quick-capture", name: t("input.submit") + "（弹窗）", callback: () => this.quickCapture() });
     this.addCommand({
       id: "memoria-normalize-all",
-      name: "规范化所有笔记格式（修复 md 渲染）",
+      name: t("notice.normalizing"),
       callback: () => this.normalizeAll(),
     });
 
@@ -72,8 +79,8 @@ export default class MemoriaPlugin extends Plugin {
   }
 
   private async normalizeAll() {
-    if (!confirm("将重写所有 Memoria 笔记的 md 格式以修复渲染问题。\n建议先备份 Memoria 文件夹。\n\n确定继续吗？")) return;
-    new Notice("正在规范化…");
+    if (!confirm(t("notice.normalizeConfirm"))) return;
+    new Notice(t("notice.normalizing"));
     try {
       await this.store.reloadAll();
       const all = this.store.getAll();
@@ -100,10 +107,10 @@ export default class MemoriaPlugin extends Plugin {
         await this.app.vault.modify(file, raw);
       }
       await this.store.reloadAll();
-      new Notice(`✓ 已规范化 ${count} 条笔记`);
+      new Notice(t("notice.normalizeDone", { n: count }));
     } catch (e: unknown) {
       console.error(e);
-      new Notice("规范化失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(t("notice.normalizeFailed", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
 
@@ -111,14 +118,14 @@ export default class MemoriaPlugin extends Plugin {
     const backdrop = document.createElement("div");
     backdrop.addClass("memoria-modal-backdrop");
     const modal = backdrop.createDiv({ cls: "memoria-modal" });
-    modal.createDiv({ cls: "memoria-modal-title", text: "💭 此刻想到了什么？" });
+    modal.createDiv({ cls: "memoria-modal-title", text: t("input.placeholder") });
     const textarea = modal.createEl("textarea", {
       cls: "memoria-modal-textarea",
-      attr: { placeholder: "Ctrl+Enter 发送 · Esc 关闭" },
+      attr: { placeholder: "Ctrl+Enter / Cmd+Enter" },
     });
     const btns = modal.createDiv({ cls: "memoria-modal-btns" });
-    const cancelBtn = btns.createEl("button", { text: "取消" });
-    const sendBtn = btns.createEl("button", { text: "发送", cls: "mod-cta" });
+    const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+    const sendBtn = btns.createEl("button", { text: t("input.submit"), cls: "mod-cta" });
     document.body.appendChild(backdrop);
     setTimeout(() => textarea.focus(), 20);
 
@@ -128,16 +135,17 @@ export default class MemoriaPlugin extends Plugin {
       if (!text) { close(); return; }
       try {
         await this.store.addMemo(text);
-        new Notice("✓ 已记下");
+        new Notice(t("notice.saved"));
         close();
       } catch (e: unknown) {
-        new Notice("保存失败：" + (e instanceof Error ? e.message : String(e)));
+        new Notice(t("notice.saveFailed", { msg: e instanceof Error ? e.message : String(e) }));
       }
     };
 
     cancelBtn.addEventListener("click", close);
     backdrop.addEventListener("click", e => { if (e.target === backdrop) close(); });
     textarea.addEventListener("keydown", e => {
+      if (e.isComposing || e.keyCode === 229) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); submit(); }
       else if (e.key === "Escape") close();
     });

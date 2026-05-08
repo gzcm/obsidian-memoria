@@ -1,4 +1,4 @@
-/* ================================================================
+﻿/* ================================================================
  * Memoria 样式（完全基于 Obsidian CSS 变量，自动跟随主题）
  * ================================================================ */
 
@@ -105,9 +105,8 @@
 .memoria-heatmap {
   display: flex;
   gap: 3px;
-  padding: 8px 6px 16px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  margin-bottom: 4px;
+  padding: 8px 6px 8px;
+  /* v1.4.1: 去掉底部灰线，由下方的进度条提供"分隔感" */
 }
 .memoria-heatmap-col {
   display: flex;
@@ -266,11 +265,21 @@
 .memoria-topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* v1.4.5: 去掉 justify-content: space-between
+   *   旧版 topbar 是 3 段式（title | search | toggle），space-between 天然好使；
+   *   v1.4.5 新增 topbar-tools 变成 4 段后，space-between 会把所有子元素均匀分布，
+   *   导致搜索框跑到中间去。
+   *   改用"title 靠左 + search-wrap 用 margin-left:auto 把自己和后续 tools/toggle 整体推到右边"。
+   */
+  gap: 8px;
   padding: 12px 24px;
   border-bottom: 1px solid var(--background-modifier-border);
   flex-shrink: 0;
   background: var(--background-primary);
+}
+/* v1.4.5: 让搜索框这组元素贴右边 */
+.memoria-topbar .memoria-search-wrap {
+  margin-left: auto;
 }
 .memoria-topbar-title {
   display: flex;
@@ -338,7 +347,9 @@
   padding: 4px 8px;
   border: none !important;
   background: transparent !important;
-  color: var(--text-muted);
+  /* v1.4.9: 颜色从 --text-muted 降到 --text-faint，整体界面更柔和、不突兀。
+   *   与打卡条靶心/视图切换、侧栏活跃度切换按钮同一色阶，全局视觉统一。 */
+  color: var(--text-faint);
   cursor: pointer;
   border-radius: 4px;
   display: inline-flex;
@@ -349,11 +360,26 @@
 }
 .memoria-icon-btn:hover {
   background: var(--background-modifier-hover) !important;
-  color: var(--text-normal);
+  /* v1.4.9: hover 改为 accent 色，与打卡条和切换按钮的 hover 行为一致，
+   *   给"这个东西可点击"的强反馈，代替原来变 --text-normal 的弱反馈。 */
+  color: var(--interactive-accent) !important;
 }
 .memoria-icon-btn .svg-icon {
   width: 14px;
   height: 14px;
+}
+
+/* v1.1.2: 刷新按钮点击后转圈动画 */
+.memoria-icon-btn.is-spinning {
+  pointer-events: none;
+  opacity: 0.8;
+}
+.memoria-icon-btn.is-spinning .svg-icon {
+  animation: memoria-spin 0.8s linear infinite;
+}
+@keyframes memoria-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* 输入卡片 */
@@ -366,6 +392,13 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
   transition: border-color 0.15s, box-shadow 0.15s;
   flex-shrink: 0;
+  /* v1.4.4: 输入卡建立独立的层叠上下文，并抬高到 z-index:2。
+   *   原因：:focus-within 激活后的 3px accent 光晕 box-shadow 会向外扩散，
+   *   如果输入卡没有独立层级，扩散到的区域会被相邻的 .memoria-list 里
+   *   带不透明背景的笔记卡片覆盖掉（移动端输入卡贴底、手指滚动时尤其明显）。
+   *   给它一个高于卡片的 z-index 即可让光晕始终"浮"在笔记之上。 */
+  position: relative;
+  z-index: 2;
 }
 .memoria-input-card:focus-within {
   border-color: var(--interactive-accent);
@@ -374,9 +407,24 @@
 }
 .memoria-input {
   width: 100%;
+  /* v1.1.18: box-sizing 必须显式声明为 border-box，
+   *   否则 width:100% + Obsidian/主题给 textarea 的隐式 border inset
+   *   会让实际内容区略微溢出父容器，iOS WebView 下表现为"placeholder
+   *   首字符被左边裁掉一半"。 */
+  box-sizing: border-box;
+  /* v1.1.18: 彻底清除浏览器对 textarea 的原生外观
+   *   iOS Safari / Android WebView 默认 `-webkit-appearance: textarea`
+   *   会引入 2-3px 的 inset padding，placeholder 第一个字符看起来
+   *   被"前一层东西"挡住一半，实际是原生外观的凹陷边。
+   *   PC 端 Electron 用的是 Chromium，同样的规则但桌面端父容器足够宽
+   *   + 字号较小不容易看出来；手机上字大、空间小就明显了。 */
+  -webkit-appearance: none;
+  appearance: none;
   min-height: 72px;
-  max-height: 240px;
+  /* v1.1.8: max-height 用 vh 自适应，避免小屏上输入框撑满整个视口 */
+  max-height: 40vh;
   padding: 0 !important;
+  margin: 0;
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
@@ -384,8 +432,12 @@
   font-family: var(--font-text);
   font-size: 14px;
   line-height: 1.6;
+  /* v1.1.8: 关掉浏览器原生 resize 拉手，高度由 JS 动态控制；超出 max-height 才出现滚动条 */
   resize: none;
   outline: none !important;
+  overflow-y: auto;
+  /* 让高度变化更丝滑 */
+  transition: height 0.08s ease;
 }
 .memoria-input:focus,
 .memoria-input:hover,
@@ -444,17 +496,21 @@
 }
 .memoria-submit-btn {
   padding: 5px 18px;
-  border: none;
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
+  border: none !important;
+  /* v1.4.2: 用主题 accent 色 + !important 对抗某些主题对 button 的全局背景覆盖 */
+  background: var(--interactive-accent) !important;
+  color: var(--text-on-accent) !important;
   font-size: 13px;
   font-weight: 500;
   border-radius: 6px;
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background 0.12s, filter 0.12s;
+  box-shadow: none !important;
 }
 .memoria-submit-btn:hover {
-  background: var(--interactive-accent-hover);
+  background: var(--interactive-accent-hover) !important;
+  /* 有些主题没定义 --interactive-accent-hover，fallback 用 filter 做微变亮 */
+  filter: brightness(1.05);
 }
 
 /* ================== 列表 ================== */
@@ -891,6 +947,13 @@
 .memoria-card-tags {
   display: flex;
   flex-wrap: wrap;
+  /* v1.4.12: 加 align-items: center。
+     原因：v1.3.6 起"全文"折叠按钮会被 appendChild 到这个 tagRow 容器里，
+     按钮高度（含 12px SVG 图标 + padding + 1.4 行高）比标签胶囊（font-size:11px + padding:2px 10px）
+     略高 ~5-8px。flex 默认 align-items:stretch 会把胶囊拉伸到和按钮同高，
+     borderRadius:999px 的胶囊被撑成细长椭圆，视觉突兀。
+     改成 center：胶囊按自然高度居中显示，按钮也居中，两者互不影响。 */
+  align-items: center;
   gap: 6px;
   margin-top: 10px;
 }
@@ -949,6 +1012,9 @@
 .memoria-modal-textarea {
   width: 100%;
   min-height: 160px;
+  /* v1.1.10: 和主输入框统一走自动高度 —— 关掉浏览器 resize 手柄，
+     避免拖拽手柄时松手落在 backdrop 导致弹窗关闭的 bug */
+  max-height: 60vh;
   padding: 10px 12px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
@@ -957,8 +1023,10 @@
   font-family: var(--font-text);
   font-size: 14px;
   line-height: 1.6;
-  resize: vertical;
+  resize: none;
+  overflow-y: auto;
   outline: none;
+  transition: height 0.08s ease;
 }
 .memoria-modal-textarea:focus {
   border-color: var(--interactive-accent);
@@ -992,9 +1060,9 @@
 
 /* ================== 概览：热力图 ↔ 日历 可切换 ================== */
 .memoria-overview {
-  padding: 10px 6px 16px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  margin-bottom: 4px;
+  padding: 10px 6px 6px;
+  /* v1.4.1: 去掉底部灰线，和下方进度条视觉上连贯 */
+  margin-bottom: 0;
 }
 
 /* 概览顶部标题栏：左边标题 + 右边切换按钮 */
@@ -1096,13 +1164,14 @@
   font-size: 11px;
   color: var(--text-muted);
   border-radius: 4px;
-  cursor: pointer;
+  cursor: default;
   user-select: none;
 }
 .memoria-cal-cell.empty {
   cursor: default;
 }
 .memoria-cal-cell.has-memo {
+  cursor: pointer;
   color: var(--text-normal);
 }
 .memoria-cal-cell.has-memo:hover {
@@ -1176,6 +1245,32 @@
   gap: 8px;
   align-items: center;
 }
+
+/* v1.6.0: 编辑模式的时间选择器
+ *   只有进入编辑模式才显示。原生 datetime-local：
+ *   - PC 端 Chromium：日历弹窗 + 时间选择
+ *   - iOS Safari：滚轮选择器（体验非常好）
+ *   - Android Chrome：material datetime picker
+ *   保持视觉风格与 cancel-btn 一致：低调灰边框，hover 加深。
+ */
+.memoria-edit-datetime {
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-text);
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.memoria-edit-datetime:hover,
+.memoria-edit-datetime:focus {
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
 .memoria-cancel-btn {
   padding: 5px 14px;
   border: 1px solid var(--background-modifier-border) !important;
@@ -1190,6 +1285,34 @@
 .memoria-cancel-btn:hover {
   background: var(--background-modifier-hover) !important;
   color: var(--text-normal);
+}
+
+/* v2.0.8: 移动端编辑模式下，datetime-local 输入框在窄屏会挤占"取消/发送"按钮
+ *   的位置，导致按钮被遮挡或挤出视口。把 datetime-input 换行到上方一行，
+ *   按钮独占第二行右对齐，手机端两个按钮稳定可见。桌面端保持原样单行布局。
+ *
+ * v2.0.12: v2.0.9~2.0.11 尝试让 datetime 与下方工具列左对齐（视觉更工整），但
+ *   iOS Safari 对 input[type="datetime-local"] 有 3 个联合 quirk
+ *   （-webkit-appearance / flex min-width: auto / 默认 margin），即便都规避后
+ *   真机表现仍不稳定。**改回 v2.0.8 的简单方案**：datetime 在 submit-wrap 内
+ *   按其自然宽度贴右排列（iOS 默认行为），上下两行布局清晰，按钮永远可见。
+ *   视觉上不与左侧工具列左对齐，但稳定、跨平台一致、零 quirk。
+ */
+@media (max-width: 680px) {
+  .memoria-submit-wrap {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    row-gap: 8px;
+  }
+  .memoria-edit-datetime:not(.memoria-hidden) {
+    /* 编辑态下整体换行到 submit-wrap 第一行（按钮在第二行）
+     *   不强求 width: 100%，让 iOS 按内容宽度自然渲染（贴右） */
+    flex-basis: 100%;
+    order: -1;
+    padding: 6px 10px;
+    font-size: 13px;
+    min-height: 32px;
+  }
 }
 
 /* 正在编辑的卡片：高亮边框 */
@@ -1332,13 +1455,19 @@
     z-index: 5;
     transform: translateX(-100%);
     transition: transform 0.25s ease;
-    box-shadow: 4px 0 18px rgba(0, 0, 0, 0.25);
+    /* v1.1.18: 阴影只在打开时显示
+     *   关闭态 translateX(-100%) 虽然侧栏本体移到视口外，但 box-shadow
+     *   `4 0 18 0.25` 的 18px 扩散会泄到视口左侧，轻微压在输入卡片左缘上，
+     *   部分 iOS / Android WebView 下甚至会发生"此字左半被遮"的观感。
+     */
+    box-shadow: none;
     border-right: 1px solid var(--background-modifier-border);
     border-bottom: none;
     overflow-y: auto;
   }
   .memoria-root.memoria-sidebar-open .memoria-sidebar {
     transform: translateX(0);
+    box-shadow: 4px 0 18px rgba(0, 0, 0, 0.25);
   }
   /* 蒙版 */
   .memoria-sidebar-overlay {
@@ -1380,21 +1509,50 @@
     width: 100%;
     min-width: 80px;
   }
-  /* 输入卡片更紧凑 */
+  /* v1.1.19: 手机端输入卡片贴底 —— flex order 让 input-card 出现在 list 之后，
+   *   input-card 作为 flex item 天然停在 main 底部（flex-direction: column，main overflow:hidden）。
+   *   不需要 position:sticky，避免某些 WebView 下 sticky 计算不准。
+   */
+  .memoria-list {
+    order: 1;
+    padding: 12px 12px 16px;
+  }
   .memoria-input-card {
-    margin: 10px 12px 0;
+    order: 10;
+    margin: 0 8px 8px;
     padding: 10px 12px 8px;
+    /* 加一个上方投影，让底部卡片有"浮起来"的感觉，视觉上和微信/微博聊天框一致 */
+    box-shadow: 0 -4px 14px -4px rgba(0, 0, 0, 0.08);
+    border-radius: 14px;
   }
   .memoria-input {
     min-height: 56px;
     font-size: 15px; /* 手机上避免 iOS 自动缩放 */
+    /* v1.1.18: 防第三方 OB 主题给 textarea 加 text-indent / padding-left，
+     *   导致 placeholder 首字符"此"被左边界裁掉。
+     * v1.4.14: 把 padding-left 从 0 !important 改为 4px !important。
+     *   原来一刀切置 0 会让文字紧贴 textarea 左边缘，在 iOS WebView + 某些
+     *   中文字体组合下会把首列笔画（例如"测""此"）"咬掉" 1-2px，
+     *   视觉上像文字被"剪半"。4px 的安全区既能防主题注入大 padding，
+     *   又保证字形完整呈现。
+     * 右侧补齐对称 padding，避免最后一字在滚动条出现时被压到。
+     * v1.4.16: 补 padding-top/bottom。
+     *   根因：PC 端原 .memoria-input 有 `padding: 0 !important`（简写覆盖四边），
+     *   v1.4.14 移动端只补了左右，垂直方向仍然是 0。iOS WebView 里中文字首行顶部
+     *   反锯齿像素会超出 content box 被裁（"测""试""此"等字右上点画会丢 1-2px），
+     *   表现为\"顶部笔画被咬掉\"。加 padding-top:2px 提供垂直安全区，对称加
+     *   padding-bottom:2px 保持视觉平衡；line-height:1.6 已经让文字之间有缓冲，
+     *   所以 2px 足够，再大会让输入框看起来闲散。 */
+    text-indent: 0 !important;
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+    padding-top: 2px !important;
+    padding-bottom: 2px !important;
+    -webkit-appearance: none;
+    appearance: none;
   }
   .memoria-input-hint {
     display: none;
-  }
-  /* 列表 */
-  .memoria-list {
-    padding: 12px 12px 72px;
   }
   /* 卡片紧凑 */
   .memoria-card {
@@ -1448,21 +1606,40 @@
 
 /* 让视图 contentEl 成为滚动容器（用 block 避免 flex 压扁内部高度）
  * 并且把背景色统一铺满整个 view-content，避免居中后两侧露出主题色背景
+ *
+ * v1.1.6: 直接把"出血框"padding 放在 view-content 上 —— 这样 Obsidian 移动端
+ *   给 .view-content 加的任何内置 padding / inset 都被我们覆盖，同时子元素
+ *   .memoria-stats-view 只负责最大宽度约束和居中，不再管留白，避免"padding 叠加又被裁掉"。
+ */
+/* v1.1.6: 桌面：left/right 56px 舒适留白
+ * v1.1.17: 真正让手机端生效 —— 之前 is-mobile 和默认规则给的 padding 一样，
+ *   等于没区分。现在桌面 48/56/64，手机 24/16/48（上/左右/下），释放横向空间
+ *   给 24 小时柱状图和总览四宫格用。
  */
 .workspace-leaf-content[data-type="memoria-stats-view"] .view-content {
-  padding: 0 !important;
+  padding: 48px 56px 64px !important;
   overflow-y: auto !important;
   display: block !important;
   background: var(--background-primary) !important;
+  box-sizing: border-box;
+}
+.is-mobile .workspace-leaf-content[data-type="memoria-stats-view"] .view-content {
+  padding: 24px 16px 48px !important;
+}
+@media (max-width: 520px) {
+  .workspace-leaf-content[data-type="memoria-stats-view"] .view-content {
+    padding: 24px 16px 48px !important;
+  }
 }
 
 .memoria-stats-view {
   display: block;
-  padding: 56px 48px 64px !important;
+  padding: 0 !important;
   max-width: 1000px;
   margin: 0 auto;
   color: var(--text-normal);
   background: transparent;
+  box-sizing: border-box;
 }
 
 .memoria-stats-body {
@@ -1496,13 +1673,19 @@
 
 /* 通用 section 样式（替代原 modal 前缀） */
 .memoria-stats-view .mstat-section {
-  margin-bottom: 28px;
+  margin-bottom: 36px;
+}
+/* v1.1.5: section 之间加细分隔线（第 2 个开始），制造"章节"节奏感 */
+.memoria-stats-view .mstat-section + .mstat-section {
+  margin-top: 8px;
+  padding-top: 36px;
+  border-top: 1px solid var(--background-modifier-border);
 }
 .memoria-stats-view .mstat-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-muted);
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   letter-spacing: 0.3px;
 }
 .memoria-stats-view .mstat-title-row {
@@ -1510,7 +1693,8 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap; /* 窄屏自动换行 */
 }
 .memoria-stats-view .mstat-title-row .mstat-title {
   margin-bottom: 0;
@@ -1530,25 +1714,27 @@
 .memoria-stats-view .mstat-overview {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  gap: 14px;
 }
 .memoria-stats-view .mstat-bignum {
-  padding: 18px 10px;
+  padding: 22px 10px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 10px;
+  border-radius: 12px;
   text-align: center;
-  transition: border-color 0.15s, transform 0.15s;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
 .memoria-stats-view .mstat-bignum:hover {
   border-color: color-mix(in srgb, var(--interactive-accent) 50%, var(--background-modifier-border));
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px -6px color-mix(in srgb, var(--interactive-accent) 40%, transparent);
 }
 .memoria-stats-view .mstat-bignum-num {
-  font-size: 28px;
+  /* v1.1.5: 桌面 40px，视觉分量更足 */
+  font-size: 36px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  line-height: 1.1;
+  line-height: 1.05;
   background: linear-gradient(
     135deg,
     var(--text-normal),
@@ -1559,9 +1745,10 @@
   color: transparent;
 }
 .memoria-stats-view .mstat-bignum-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-faint);
-  margin-top: 5px;
+  margin-top: 8px;
+  letter-spacing: 0.5px;
 }
 
 /* 365 天热力图 */
@@ -1569,7 +1756,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 14px;
+  gap: 12px;
+  flex-wrap: wrap; /* v1.1.5: 窄屏换行避免挤压 */
 }
 .memoria-stats-view .mstat-yh-title-row .mstat-title {
   margin-bottom: 0;
@@ -1683,10 +1872,19 @@
 
 /* 月度分布 */
 .memoria-stats-view .mstat-monthly-title {
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 .memoria-stats-view .mstat-monthly-wrap {
   margin-bottom: 28px;
+}
+/* v1.1.5: 月度分布紧跟年度热力图，视为同一组 → 去掉分隔线 */
+.memoria-stats-view .mstat-section.mstat-monthly-title + * {
+  /* 占位：下一段（月度柱图 wrap）不是 .mstat-section，不需特殊处理 */
+}
+.memoria-stats-view .mstat-section.mstat-monthly-title {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 
 /* 柱状图 */
@@ -1737,6 +1935,10 @@
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   height: 13px;
+}
+/* v1.1.5: 0 条月份的数字再弱化一档，保留节奏但不抢视觉 */
+.memoria-stats-view .mstat-bar-num.is-dim {
+  opacity: 0.35;
 }
 .memoria-stats-view .mstat-bar-label {
   font-size: 11px;
@@ -1792,17 +1994,26 @@
   color: var(--text-faint);
   background: var(--background-secondary);
 }
+/* v1.1.5: 金银铜改用更有辨识度的饱和色 + 细微内阴影增加质感 */
 .memoria-stats-view .mstat-hbar-rank.rank-1 {
-  background: linear-gradient(135deg, #ffd700, #ffaa00);
+  background: linear-gradient(135deg, #f4c430, #d79820);
   color: #fff;
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(212, 152, 32, 0.3);
 }
 .memoria-stats-view .mstat-hbar-rank.rank-2 {
-  background: linear-gradient(135deg, #d0d0d0, #a0a0a0);
+  background: linear-gradient(135deg, #c8c8cc, #9a9aa0);
   color: #fff;
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.15);
 }
 .memoria-stats-view .mstat-hbar-rank.rank-3 {
-  background: linear-gradient(135deg, #d49060, #b86b30);
+  background: linear-gradient(135deg, #cd7f32, #a0602a);
   color: #fff;
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.15);
+}
+/* rank-4 及之后：保持淡灰，把视觉焦点留给前三 */
+.memoria-stats-view .mstat-hbar-rank.rank-4 {
+  background: var(--background-secondary);
+  color: var(--text-faint);
 }
 .memoria-stats-view .mstat-hbar-label {
   font-size: 13px;
@@ -1854,20 +2065,27 @@
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 12px 16px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
+  border-radius: 10px;
   font-size: 14px;
   color: var(--text-normal);
   line-height: 1.55;
   border-left: 3px solid
     color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+  /* v1.1.5: hover 时略抬升 + 左边框变深，让每条发现更像"卡片" */
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.memoria-stats-view .mstat-fact:hover {
+  transform: translateX(2px);
+  border-left-color: var(--interactive-accent);
+  box-shadow: 0 2px 8px -4px color-mix(in srgb, var(--interactive-accent) 40%, transparent);
 }
 .memoria-stats-view .mstat-fact-icon {
   flex-shrink: 0;
-  font-size: 16px;
-  line-height: 1.5;
+  font-size: 18px;
+  line-height: 1.4;
 }
 .memoria-stats-view .mstat-empty {
   padding: 16px;
@@ -1878,18 +2096,133 @@
   border-radius: 6px;
 }
 
+/* v1.1.17: 柱状图 & 年度热力图滚动容器
+ *   在整页 padding 区域内独立横向滚动，不再推整页滚动。
+ *   负 margin 让滚动区域贴齐视口左右边缘（越过 section 的 padding），
+ *   这样手指从左滑到右可以看到所有柱子，滚动条也不会被 padding 切掉。
+ */
+.memoria-stats-view .mstat-bar-chart-scroll,
+.memoria-stats-view .mstat-yh-scroll {
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  /* 隐藏滚动条但保留滚动能力（移动端更常见），需要手势提示可改为 'thin' */
+  scrollbar-width: thin;
+  scrollbar-color: var(--background-modifier-border) transparent;
+}
+.memoria-stats-view .mstat-bar-chart-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.memoria-stats-view .mstat-bar-chart-scroll::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border);
+  border-radius: 2px;
+}
+.memoria-stats-view .mstat-bar-chart-scroll .mstat-bar-chart {
+  /* 让柱图有固定最小宽度，不被 flex 压扁 */
+  min-width: 520px;
+}
+.memoria-stats-view .mstat-bar-chart-scroll .mstat-bar-chart-hour {
+  /* 24 小时图每列至少 18px + gap，保底约 580px */
+  min-width: 580px;
+}
+.memoria-stats-view .mstat-yh-scroll {
+  /* 年度热力图 + 月份标签都在这里面，彼此不会错位 */
+  padding-bottom: 2px;
+}
+
 /* 窄屏响应式 */
 @media (max-width: 680px) {
-  .memoria-stats-view {
-    padding: 16px 12px 40px;
+  .workspace-leaf-content[data-type="memoria-stats-view"] .view-content {
+    /* v1.1.17: 和主规则一致，16px 左右 padding，释放 8px 给柱图区域 */
+    padding: 24px 16px 48px !important;
   }
+  .memoria-stats-view {
+    padding: 0 !important;
+  }
+  /* 总览四宫格：4 列 → 2×2 */
   .memoria-stats-view .mstat-overview {
     grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
   }
+  .memoria-stats-view .mstat-bignum {
+    padding: 18px 8px;
+  }
+  .memoria-stats-view .mstat-bignum-num {
+    font-size: 28px;
+  }
+  /* Top 10 标签奖牌行：奖牌 + 标签 + 进度条 + 数字 四列 */
   .memoria-stats-view .mstat-hbar-row {
     grid-template-columns: 22px 110px 1fr 30px;
     gap: 8px;
   }
+  /* section 节奏感收缩 */
+  .memoria-stats-view .mstat-section + .mstat-section {
+    padding-top: 28px;
+    margin-top: 0;
+  }
+  .mstat-pagetitle {
+    margin-bottom: 24px;
+  }
+  .mstat-pagetitle-text {
+    font-size: 18px;
+  }
+  /* v1.1.17: 标题 + 副标题在窄屏改为纵向堆叠，副标题不挤压标题 */
+  .memoria-stats-view .mstat-title-row {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .memoria-stats-view .mstat-title-row .mstat-subtitle {
+    flex-basis: 100%;
+    margin-top: -2px;
+  }
+  /* 柱图高度在窄屏收缩 180px → 140px，视觉更紧凑 */
+  .memoria-stats-view .mstat-bar-chart {
+    height: 140px;
+  }
+  /* 24 小时柱图的两位数字 label 太挤，改成 45° 旋转省空间（如需保水平可注释掉） */
+  .memoria-stats-view .mstat-bar-chart-hour .mstat-bar-label {
+    font-size: 9px;
+  }
+  /* 有趣发现卡片：padding 收紧 */
+  .memoria-stats-view .mstat-fact {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  /* 结论文字 */
+  .memoria-stats-view .mstat-desc {
+    font-size: 12px;
+    padding: 8px 12px;
+  }
+}
+
+/* v1.1.6: 去除 Obsidian 移动端在数据报告页面左侧的"翻页灰色渐变"
+ *
+ * Obsidian 移动端会在 workspace-leaf 上用 ::before 伪元素画一条阴影，
+ * 用来暗示"左边可以滑出来一个侧栏"。在我们这个独立的数据报告标签页里完全不需要，
+ * 反而显得不够干净。这里只对 stats-view 所在的 leaf 去掉。
+ */
+.is-mobile .workspace-leaf:has(.workspace-leaf-content[data-type="memoria-stats-view"])::before,
+.is-mobile .workspace-leaf:has(.workspace-leaf-content[data-type="memoria-stats-view"])::after,
+.is-mobile .workspace-leaf-content[data-type="memoria-stats-view"]::before,
+.is-mobile .workspace-leaf-content[data-type="memoria-stats-view"]::after,
+.is-mobile .workspace-leaf-content[data-type="memoria-stats-view"] .view-content::before,
+.is-mobile .workspace-leaf-content[data-type="memoria-stats-view"] .view-content::after {
+  display: none !important;
+  box-shadow: none !important;
+  background: none !important;
+  content: none !important;
+}
+/* 同样覆盖主视图（memoria-view）的翻页渐变 */
+.is-mobile .workspace-leaf:has(.workspace-leaf-content[data-type="memoria-view"])::before,
+.is-mobile .workspace-leaf:has(.workspace-leaf-content[data-type="memoria-view"])::after,
+.is-mobile .workspace-leaf-content[data-type="memoria-view"]::before,
+.is-mobile .workspace-leaf-content[data-type="memoria-view"]::after,
+.is-mobile .workspace-leaf-content[data-type="memoria-view"] .view-content::before,
+.is-mobile .workspace-leaf-content[data-type="memoria-view"] .view-content::after {
+  display: none !important;
+  box-shadow: none !important;
+  background: none !important;
+  content: none !important;
 }
 
 /* ================== 统计弹窗（兼容保留，以防旧 API 调用） ================== */
@@ -2301,16 +2634,17 @@
 }
 .memoria-table-picker-grid {
   display: grid;
-  grid-template-columns: repeat(8, 18px);
-  grid-template-rows: repeat(8, 18px);
-  gap: 2px;
+  /* v1.1.15: 桌面 8×8 → 6×6，顺便把格子从 18px 放大到 22px，更易点击 */
+  grid-template-columns: repeat(6, 22px);
+  grid-template-rows: repeat(6, 22px);
+  gap: 3px;
 }
 .memoria-table-picker-cell {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 2px;
+  border-radius: 3px;
   cursor: pointer;
   transition: background 0.08s ease, border-color 0.08s ease;
 }
@@ -2320,6 +2654,46 @@
 .memoria-table-picker-cell.is-active {
   background: color-mix(in srgb, var(--interactive-accent) 25%, transparent);
   border-color: var(--interactive-accent);
+}
+
+/* v1.1.7: 手机端表格选择器 —— 单击即插入
+ * v1.1.15: 8×8 → 5×5，单元格 32px → 36px。5×5 在 320px 屏（最窄的 iPhone SE）
+ *   上宽度约 36×5 + 3×4 + 16×2 = 224px，居中显示后两侧各有 48px 余量，永不溢出。
+ *   95% 的 md 表格都是 ≤5 列，减少选择后界面干净非常多。
+ */
+.memoria-table-picker.is-mobile {
+  padding: 16px;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+.memoria-table-picker.is-mobile .memoria-table-picker-grid {
+  grid-template-columns: repeat(5, 36px);
+  grid-template-rows: repeat(5, 36px);
+  gap: 4px;
+}
+.memoria-table-picker.is-mobile .memoria-table-picker-cell {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+}
+.memoria-table-picker.is-mobile .memoria-table-picker-cell-text {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none; /* 点击直接穿透到 cell */
+}
+.memoria-table-picker.is-mobile .memoria-table-picker-cell:active {
+  background: color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+  border-color: var(--interactive-accent);
+}
+.memoria-table-picker.is-mobile .memoria-table-picker-label {
+  font-size: 13px;
+  margin-bottom: 12px;
+  color: var(--text-normal);
+  font-weight: 500;
 }
 
 
@@ -2333,7 +2707,780 @@
   background: color-mix(in srgb, var(--text-error, #e03131) 85%, #000);
 }
 
-/* v1.1.7+: 输入栏时间芯片与选择器 */
+/* ================================================================
+ * v1.1.19 新增样式
+ * ================================================================ */
+
+/* —— 卡片 hover 引用按钮（次级可见，从 ⋯ 菜单提到表面） —— */
+.memoria-card-quote {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.memoria-card:hover .memoria-card-quote {
+  opacity: 0.7;
+}
+.memoria-card-quote:hover {
+  opacity: 1 !important;
+  color: var(--interactive-accent) !important;
+}
+.memoria-card-quote .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+@media (max-width: 680px) {
+  /* 手机没有 hover，常显但柔和 */
+  .memoria-card-quote {
+    opacity: 0.45;
+  }
+}
+
+/* —— empty 状态跳转按钮（回顾空态的"随机 5 条"）—— */
+.memoria-empty-btn {
+  margin-top: 16px;
+  padding: 8px 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: none;
+  transition: transform 0.12s, filter 0.12s, box-shadow 0.12s;
+}
+.memoria-empty-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: 0 4px 12px -4px
+    color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+}
+.memoria-empty-btn .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* —— meta 工具条：可能并排两个按钮时的间距 —— */
+.memoria-list-meta {
+  gap: 10px;
+}
+
+/* —— 数据报告：今日彩蛋 fact 的特殊样式 —— */
+.memoria-stats-view .mstat-fact.is-egg {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary)),
+    color-mix(in srgb, var(--interactive-accent) 3%, var(--background-primary))
+  );
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--interactive-accent) 32%,
+      var(--background-modifier-border)
+    );
+  border-left: 3px solid var(--interactive-accent);
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--text-normal);
+  position: relative;
+  overflow: hidden;
+}
+.memoria-stats-view .mstat-fact.is-egg::after {
+  /* 右上角藏一个非常淡的星光装饰 */
+  content: "✦";
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 14px;
+  color: var(--interactive-accent);
+  opacity: 0.25;
+  pointer-events: none;
+}
+.memoria-stats-view .mstat-fact.is-egg .mstat-fact-icon {
+  font-size: 20px;
+}
+
+/* —— 视觉微调（第四类建议）—— */
+
+/* #17 统计条数字字号略收，label 略放 */
+.memoria-stat-num {
+  font-size: 20px; /* 22px → 20px */
+}
+.memoria-stat-label {
+  font-size: 12px; /* 11px → 12px */
+}
+
+/* #16 桌面 logo 文字不再那么粗 */
+.memoria-topbar-title {
+  font-size: 18px; /* 20px → 18px */
+}
+
+/* #18 标签胶囊加 hover 反馈 */
+.memoria-tag-pill {
+  transition: background 0.12s, color 0.12s, transform 0.08s;
+}
+.memoria-tag-pill:hover {
+  background: color-mix(
+    in srgb,
+    var(--interactive-accent) 16%,
+    transparent
+  );
+  color: var(--interactive-accent);
+  transform: translateY(-1px);
+}
+
+/* #19 月历今日格子字体加粗、颜色更醒目 */
+.memoria-cal-cell.is-today .memoria-cal-num {
+  font-weight: 700;
+  color: var(--interactive-accent);
+}
+
+/* #20 搜索框在深色主题下有更清晰的背景对比 */
+.memoria-search-wrap {
+  background: var(--background-secondary);
+}
+
+/* 卡片之间的节奏感（#6：日期组内的卡片垂直间距） */
+.memoria-day-group .memoria-card + .memoria-card {
+  margin-top: 8px;
+}
+
+/* ==================== v1.4.0 → v1.4.1: 每日打卡进度条 ==================== */
+/* 整行：进度条 + 右侧图标组（靶心 + 视图切换） */
+.memoria-daily-goal-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 10px 10px;
+  padding: 2px 0;
+  /* 作为 overview 和 "视图" 列表之间的分隔；底部加一点 margin 和视图列表拉开距离 */
+}
+
+/* 进度条本体（可点击跳今天） */
+.memoria-daily-goal {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 140ms ease;
+}
+.memoria-daily-goal:hover {
+  background: var(--background-modifier-hover);
+}
+.memoria-daily-goal-bar {
+  height: 4px;
+  background: var(--background-modifier-border);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.memoria-daily-goal-fill {
+  height: 100%;
+  width: 0%;
+  /* v1.4.1: 颜色跟随主题 accent，自动适配深浅/用户自定义主题 */
+  background: var(--interactive-accent);
+  border-radius: 2px;
+  transition: width 320ms ease, box-shadow 220ms ease;
+}
+/* 已完成（≥目标）：细微发光，暗示"达成" */
+.memoria-daily-goal-row.is-done .memoria-daily-goal-fill {
+  box-shadow: 0 0 6px color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+}
+
+/* 右侧图标组 */
+.memoria-daily-goal-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.memoria-daily-goal-target,
+.memoria-daily-goal-switch {
+  padding: 3px 4px !important;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.memoria-daily-goal-target:hover,
+.memoria-daily-goal-switch:hover {
+  color: var(--interactive-accent) !important;
+}
+.memoria-daily-goal-target .svg-icon,
+.memoria-daily-goal-switch .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+/* 已完成时靶心图标变 accent 色，给一点"鼓励感" */
+.memoria-daily-goal-row.is-done .memoria-daily-goal-target {
+  color: var(--interactive-accent);
+}
+
+/* v1.3.0 → v1.3.3: 长笔记折叠
+   让 card 成为定位上下文，方便折叠按钮绝对定位到右下角 */
+.memoria-card {
+  position: relative;
+}
+.memoria-card-body.is-collapsed {
+  max-height: var(--memoria-collapse-max, 240px);
+  overflow: hidden;
+  position: relative;
+  transition: max-height 180ms ease;
+}
+/* 底部渐变淡出遮罩，从 body 背景色过渡到透明
+   注意：卡片实际背景是 --background-primary-alt，fallback --background-secondary
+   遮罩底色必须与它一致，否则会有色差 */
+.memoria-card-body.is-collapsed::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 40px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--background-primary-alt, var(--background-secondary)) 90%
+  );
+  pointer-events: none;
+}
+/* 置顶卡片用 accent 混色背景，遮罩也要跟着变 */
+.memoria-card.is-pinned .memoria-card-body.is-collapsed::after {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary-alt, var(--background-secondary))) 90%
+  );
+}
+
+/* 展开/收起按钮
+   v1.3.6: 按钮挂在卡片的"最后一个可见元素"内（tagRow / imgGrid / body 优先级），
+   margin-left:auto 让它在该元素的末尾右对齐。
+   不再需要 is-peek / is-expanded 两态切换 —— 展开/折叠位置完全相同。 */
+.memoria-collapse-toggle {
+  /* 对抗 Obsidian 主题对 button 的默认样式 */
+  -webkit-appearance: none;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color 140ms ease;
+  letter-spacing: 0.2px;
+  font-family: inherit;
+  /* margin-left:auto 在 flex 容器（tagRow）里把按钮推到最右
+     在 block 容器（body 无标签无图时）里用下面的 block 规则处理 */
+  margin-left: auto;
+  /* 在渐变遮罩之上，避免被遮盖 */
+  position: relative;
+  z-index: 2;
+}
+.memoria-collapse-toggle:hover {
+  color: var(--interactive-accent);
+  background: transparent !important;
+}
+.memoria-collapse-toggle:focus,
+.memoria-collapse-toggle:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.memoria-collapse-toggle .memoria-collapse-icon {
+  display: inline-flex;
+  align-items: center;
+}
+.memoria-collapse-toggle .memoria-collapse-icon .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* 当按钮直接挂在 body 里（没有 tagRow / imgGrid 时），
+   block 容器下 flex 按钮的 margin-left:auto 不生效，
+   需改用 block 级的右对齐 */
+.memoria-card-body > .memoria-collapse-toggle {
+  display: block;
+  width: fit-content;
+  margin-top: 4px;
+  margin-left: auto;  /* 块级右对齐 */
+  margin-right: 0;
+}
+.memoria-card-body.is-collapsed > .memoria-collapse-toggle {
+  position: absolute;
+  right: 2px;
+  bottom: 8px;
+  margin: 0;
+}
+
+/* 按钮在图片网格内时：imgGrid 是 grid 布局，按钮应独占一行右对齐。
+   通过 grid-column: 1 / -1 让按钮横跨所有列，再 justify-self: end 右对齐 */
+.memoria-img-grid > .memoria-collapse-toggle {
+  grid-column: 1 / -1;
+  justify-self: end;
+  margin-top: 2px;
+}
+
+
+/* ================================================================
+ * v1.4.5: 顶部工具区（方案 A）
+ *   把数据报告按钮从 search-wrap 内抽出来，与新增的"年度全景图"
+ *   按钮并排放到独立的 .memoria-topbar-tools 容器里。
+ *   语义上"左内容右工具"，并为未来更多入口留好位置。
+ * ================================================================ */
+.memoria-topbar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.memoria-topbar-tools .memoria-icon-btn .svg-icon {
+  /* 比 search-wrap 内的 14px 稍大，与 topbar 字号协调 */
+  width: 16px;
+  height: 16px;
+}
+
+/* ================================================================
+ * v1.4.5: 年度全景图视图
+ *   布局：4 列 × 3 行 = 12 个月（窄屏依次降级到 3/2/1 列）
+ *   截图风格：白/暗底 + accent 色圆角方块标记有记录的日期
+ * ================================================================ */
+/* v1.4.7: 出血边距挪到 view-content 上（和数据报告视图一样做法）
+ *   原因：v1.4.6 把 padding 放在内层 .memoria-year-view 上，
+ *   但 Obsidian 的 .view-content 自身有 padding/inset，某些主题下会把我们内层的
+ *   padding 视觉上压缩到紧贴边缘。直接把 56/80 的出血框写在 view-content 上，
+ *   用 !important 覆盖宿主，彻底解决贴边问题。
+ */
+.workspace-leaf-content[data-type="memoria-year-view"] .view-content {
+  padding: 64px 80px 80px !important;
+  overflow-y: auto !important;
+  display: block !important;
+  background: var(--background-primary) !important;
+  box-sizing: border-box;
+}
+.is-mobile .workspace-leaf-content[data-type="memoria-year-view"] .view-content {
+  padding: 32px 20px 56px !important;
+}
+
+.memoria-year-view {
+  /* v1.4.7: 自身 padding 归零（出血框已上移到 view-content），
+   *   只负责 max-width + 居中 + 色彩上下文 */
+  padding: 0 !important;
+  max-width: 1400px;
+  margin: 0 auto;
+  color: var(--text-normal);
+  box-sizing: border-box;
+}
+
+/* ---- 顶部：年份大标题 + 切换 ---- */
+.memoria-year-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 40px;
+}
+.memoria-year-title {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-normal);
+  line-height: 1;
+}
+.memoria-year-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  padding: 3px;
+  background: var(--background-secondary);
+}
+.memoria-year-nav-btn,
+.memoria-year-today-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none !important;
+  background: transparent !important;
+  color: var(--text-muted);
+  cursor: pointer;
+  box-shadow: none !important;
+  transition: background 0.12s, color 0.12s;
+}
+.memoria-year-nav-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  padding: 0 !important;
+}
+.memoria-year-today-btn {
+  padding: 4px 14px !important;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.memoria-year-nav-btn:hover,
+.memoria-year-today-btn:hover {
+  background: var(--background-modifier-hover) !important;
+  color: var(--text-normal);
+}
+.memoria-year-nav-btn .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---- 12 个月网格（卡片化后 gap 放大，月与月之间视觉呼吸） ---- */
+.memoria-year-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 28px;
+}
+
+/* v1.4.6: 每个月卡片化
+ *   - 淡底 + 细描边 + 圆角，视觉上月份是独立单元
+ *   - 内 padding 给"纸卡"感
+ */
+.memoria-year-month {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  padding: 18px 16px 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.memoria-year-month:hover {
+  border-color: var(--background-modifier-border-hover);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* 月份英文缩写标签 + 下方细分隔线 */
+.memoria-year-month-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px dashed var(--background-modifier-border);
+}
+
+/* 星期头（日一二三四五六） */
+.memoria-year-weekhead {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-bottom: 4px;
+}
+.memoria-year-wday {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-faint);
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+/* 日期网格：6 行 × 7 列，gap 略微拉开让圆点更清爽 */
+.memoria-year-grid-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  /* v1.4.7: 格子内容居中（配合 day 的 max-width 才有"圆更小+格子留白"效果） */
+  justify-items: center;
+  align-items: center;
+}
+
+/* 单个日期圆点 —— v1.4.7: 圆点尺寸上限锁死
+ *   之前用 aspect-ratio:1 + 拉伸到整格，宽屏下圆点会随列宽变大显得粗壮；
+ *   现在 max-width/height 限死 20px，格子内居中，宽屏时圆点周围会自动留白。
+ */
+.memoria-year-day {
+  width: 100%;
+  aspect-ratio: 1;
+  max-width: 20px;
+  max-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-normal);
+  border-radius: 50%;
+  cursor: default;
+  transition: background 0.12s, color 0.12s, box-shadow 0.14s;
+  user-select: none;
+}
+
+/* 本月外日期（前一个月末 / 下一个月头）：很淡，让本月焦点更突出 */
+.memoria-year-day.is-out {
+  color: var(--text-faint);
+  opacity: 0.28;
+}
+
+/* 有笔记的日期：accent 色圆点 + 浅色数字 */
+.memoria-year-day.has-memo {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #fff);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* v1.4.8: 按笔记数分 4 档颜色深浅，与侧栏 / 数据报告热力图一致
+ *   实现：用 color-mix 把 accent 色和背景混合出 4 种深浅。
+ *   不用 opacity 是因为那会把数字也变淡，圆点多了以后看不清；
+ *   color-mix 只改背景色保持文字清晰。
+ */
+.memoria-year-day.has-memo.level-1 {
+  background: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-secondary));
+  color: var(--text-normal);
+}
+.memoria-year-day.has-memo.level-2 {
+  background: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-secondary));
+  color: var(--text-on-accent, #fff);
+}
+.memoria-year-day.has-memo.level-3 {
+  background: color-mix(in srgb, var(--interactive-accent) 80%, var(--background-secondary));
+  color: var(--text-on-accent, #fff);
+}
+.memoria-year-day.has-memo.level-4 {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #fff);
+}
+
+.memoria-year-day.has-memo:hover {
+  /* v1.4.7: 发光环同步缩小（配合 20px 圆点） */
+  box-shadow: 0 0 0 1.5px var(--background-secondary),
+    0 0 0 3px var(--interactive-accent);
+}
+
+/* 今天：不管有没有笔记都要明显标记 */
+.memoria-year-day.is-today:not(.has-memo) {
+  box-shadow: inset 0 0 0 1.5px var(--interactive-accent);
+  color: var(--interactive-accent);
+  font-weight: 600;
+}
+.memoria-year-day.is-today.has-memo {
+  /* 有笔记又是今天：双环效果 */
+  box-shadow: 0 0 0 1.5px var(--background-secondary),
+    0 0 0 3px var(--interactive-accent);
+}
+
+/* ---- 底部小统计行 ---- */
+.memoria-year-foot {
+  margin-top: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+  justify-content: center;
+}
+.memoria-year-foot-item {
+  /* 数字等宽字形，统计行读起来更稳 */
+  font-variant-numeric: tabular-nums;
+}
+.memoria-year-foot-sep {
+  opacity: 0.35;
+}
+
+/* ---- 响应式：窄屏降级 ---- */
+@media (max-width: 1200px) {
+  .memoria-year-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+  }
+  .workspace-leaf-content[data-type="memoria-year-view"] .view-content {
+    padding: 56px 56px 72px !important;
+  }
+}
+@media (max-width: 900px) {
+  .memoria-year-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+  }
+  .workspace-leaf-content[data-type="memoria-year-view"] .view-content {
+    padding: 40px 32px 56px !important;
+  }
+  .memoria-year-title {
+    font-size: 28px;
+  }
+}
+@media (max-width: 560px) {
+  .memoria-year-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .workspace-leaf-content[data-type="memoria-year-view"] .view-content {
+    padding: 28px 20px 48px !important;
+  }
+  .memoria-year-header {
+    margin-bottom: 24px;
+  }
+  .memoria-year-title {
+    font-size: 24px;
+  }
+  .memoria-year-day {
+    /* 手机单列时容器更宽，圆点也相应放大一点，配合手指触控 */
+    max-width: 26px;
+    max-height: 26px;
+    font-size: 12px;
+  }
+  /* 移动端 topbar 工具区收紧 */
+  .memoria-topbar-tools {
+    margin-left: 4px;
+  }
+}
+
+
+
+/* ==================== v2.0.0 鏂板鏍峰紡 ==================== */
+
+/* 鎼滅储鍛戒腑楂樹寒 */
+.memoria-search-hit {
+  background: var(--text-highlight-bg, rgba(255, 208, 0, 0.35));
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+/* 鎯呮劅鑹插僵鍙鍖栵細鍗＄墖宸﹁竟鑹叉潯
+   color-coding 鏄惎鍙戝紡鍒ゆ柇锛岄粯璁ゅ叧闂紝寮€鍚悗鑹叉潯鍙湪鍛戒腑鍏抽敭璇嶆椂鍑虹幇 */
+.memoria-card.memoria-mood-happy {
+  box-shadow: inset 3px 0 0 0 #f5c76a;
+}
+.memoria-card.memoria-mood-touched {
+  box-shadow: inset 3px 0 0 0 #e88eb4;
+}
+/* v2.0.2: 新增 inspired（鼓励/励志/加油） */
+.memoria-card.memoria-mood-inspired {
+  box-shadow: inset 3px 0 0 0 #e89a5c;
+}
+.memoria-card.memoria-mood-sad {
+  box-shadow: inset 3px 0 0 0 #7a93b0;
+}
+.memoria-card.memoria-mood-angry {
+  box-shadow: inset 3px 0 0 0 #c77764;
+}
+/* v2.0.1: 新增 fear（暗紫）和 tired（浅灰棕）两个维度 */
+.memoria-card.memoria-mood-fear {
+  box-shadow: inset 3px 0 0 0 #6e5a8f;
+}
+.memoria-card.memoria-mood-tired {
+  box-shadow: inset 3px 0 0 0 #a89684;
+}
+/* 缃《 / 鏀惰棌宸茬粡鏈?box-shadow锛屽拰 mood 鍙兘鍐茬獊銆俶ood 鐢?left-inset锛?   缃《鐢?border-top锛屼笉鍐茬獊锛涘拰 is-pinned 骞跺垪鏃朵紭鍏?mood 鐨勫乏鑹叉潯銆?*/
+
+/* 绱у噾瑙嗗浘妯″紡锛氶檺鍒舵瘡寮犲崱姝ｆ枃楂樺害 + 鍥剧墖缂╁皬 */
+.memoria-list.is-compact .memoria-card-body {
+  max-height: 6em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+}
+.memoria-list.is-compact .memoria-card {
+  padding: 10px 14px;
+}
+.memoria-list.is-compact .memoria-img-grid {
+  max-height: 80px;
+  overflow: hidden;
+}
+.memoria-list.is-compact .memoria-card-body p {
+  margin: 0.3em 0;
+}
+/* v2.0.5: 紧密模式下 card-body overflow: hidden 会裁掉 Obsidian task-list
+   复选框的负 margin-left（默认复选框会溢出到 li 左侧）
+   → 给 ul.contains-task-list 加左内边距，把复选框整体向右挤出来 */
+.memoria-list.is-compact .memoria-card-body ul.contains-task-list {
+  padding-left: 1.8em;
+}
+.memoria-list.is-compact .memoria-card-body ul.contains-task-list li.task-list-item input[type="checkbox"] {
+  margin-left: 0;
+}
+
+/* Vim 閫変腑鎬?*/
+.memoria-card.is-vim-selected {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+  transform: translateX(2px);
+  transition: transform 0.08s, outline 0.1s;
+}
+
+/* 鐑姏鍥惧寮?tooltip */
+.memoria-heatmap-tooltip {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-width: 180px;
+  max-width: 280px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+  color: var(--text-normal);
+  pointer-events: none;
+  animation: memoria-tip-in 0.12s ease;
+}
+@keyframes memoria-tip-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.memoria-heatmap-tooltip-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed var(--background-modifier-border);
+}
+.memoria-heatmap-tooltip-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.memoria-heatmap-tooltip-row {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0;
+  line-height: 1.5;
+}
+.memoria-heatmap-tooltip-time {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 11px;
+}
+.memoria-heatmap-tooltip-text {
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.memoria-heatmap-tooltip-more {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 6px;
+  font-style: italic;
+}
+
+/* 鐑姏鍥炬牸瀛?hover 鏀惧ぇ鏁堟灉 */
+.memoria-heatmap-cell {
+  transition: transform 0.08s, filter 0.1s;
+}
+.memoria-heatmap-cell:hover {
+  transform: scale(1.35);
+  filter: brightness(1.15);
+  z-index: 2;
+  position: relative;
+}
+
+/* ============================================================
+ * v1.1.7+: 输入栏时间芯片与选择器（本分支独有功能）
+ * ============================================================ */
 .memoria-time-chip {
   display: inline-flex;
   align-items: center;

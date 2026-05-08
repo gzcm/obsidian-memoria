@@ -54,6 +54,7 @@ export function parseMemos(filePath: string, content: string): Memo[] {
       const memoContent = contentLines.join("\n");
       const tags = extractTags(memoContent);
 
+      const taskState = checkTasks(memoContent);
       memos.push({
         file: filePath,
         date: currentDate,
@@ -65,6 +66,8 @@ export function parseMemos(filePath: string, content: string): Memo[] {
         hasLink: checkHasLink(memoContent),
         isPinned: tags.includes(TAG_PINNED),
         isStarred: tags.includes(TAG_STARRED),
+        hasOpenTask: taskState.open,
+        hasClosedTask: taskState.closed,
         range: [startLine, endLine],
       });
       continue;
@@ -207,4 +210,93 @@ export function normalizeForRender(content: string): string {
     result.push(line);
   }
   return result.join("\n");
+}
+
+/** 检测任务列表状态 */
+function checkTasks(content: string): { open: boolean; closed: boolean } {
+  const openRe = /(?:^|\n)\s*[-*+]\s+\[ \]\s/;
+  const closedRe = /(?:^|\n)\s*[-*+]\s+\[[xX]\]\s/;
+  return { open: openRe.test(content), closed: closedRe.test(content) };
+}
+
+/** 将粘贴的 HTML 转为 Markdown */
+export function htmlToMarkdown(html: string): string {
+  if (!isHtmlContent(html)) return "";
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const md = nodeToMd(doc.body);
+    return md.trim();
+  } catch {
+    return "";
+  }
+}
+
+function isHtmlContent(text: string): boolean {
+  return /<\/?(strong|b|em|i|a|h[1-6]|ul|ol|li|blockquote|pre|code|img|hr)[\s>]/i.test(text);
+}
+
+function nodeToMd(node: Node, indent = 0): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.textContent ?? "").replace(/\s+/g, " ")
+      .replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1");
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+  const el = node as HTMLElement;
+  const tag = el.tagName;
+  const children = Array.from(el.childNodes);
+  const inner = (): string => children.map(c => nodeToMd(c, indent)).join("");
+
+  switch (tag) {
+    case "BR": return "\n";
+    case "HR": return "\n---\n";
+    case "STRONG": case "B": return "**" + inner().replace(/\\([*_])/g, "$1") + "**";
+    case "EM": case "I": return "*" + inner().replace(/\\([*_])/g, "$1") + "*";
+    case "CODE": return "`" + (el.textContent ?? "") + "`";
+    case "PRE": return "\n```\n" + (el.textContent ?? "") + "\n```\n";
+    case "A": {
+      const href = el.getAttribute("href") ?? "";
+      const text = inner();
+      return href ? `[${text}](${href})` : text;
+    }
+    case "IMG": {
+      const src = el.getAttribute("src") ?? "";
+      const alt = el.getAttribute("alt") ?? "";
+      return src ? `![${alt}](${src})` : "";
+    }
+    case "H1": return "\n# " + inner() + "\n";
+    case "H2": return "\n## " + inner() + "\n";
+    case "H3": return "\n### " + inner() + "\n";
+    case "H4": return "\n#### " + inner() + "\n";
+    case "H5": return "\n##### " + inner() + "\n";
+    case "H6": return "\n###### " + inner() + "\n";
+    case "BLOCKQUOTE": return "\n" + inner().trim().split("\n").map(l => "> " + l).join("\n") + "\n";
+    case "UL": {
+      let result = "\n";
+      Array.from(el.children).forEach(li => {
+        if (li.tagName === "LI") {
+          const prefix = "  ".repeat(indent);
+          const liText = Array.from(li.childNodes).map(c => nodeToMd(c, indent + 1)).join("").trim();
+          result += `${prefix}- ${liText}\n`;
+        }
+      });
+      return result;
+    }
+    case "OL": {
+      let result = "\n", num = 1;
+      Array.from(el.children).forEach(li => {
+        if (li.tagName === "LI") {
+          const prefix = "  ".repeat(indent);
+          const liText = Array.from(li.childNodes).map(c => nodeToMd(c, indent + 1)).join("").trim();
+          result += `${prefix}${num}. ${liText}\n`;
+          num++;
+        }
+      });
+      return result;
+    }
+    case "LI": return inner();
+    case "P": case "DIV": case "SECTION": case "ARTICLE": return "\n" + inner() + "\n";
+    case "SCRIPT": case "STYLE": case "NOSCRIPT": return "";
+    default: return inner();
+  }
 }

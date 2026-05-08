@@ -1,10 +1,10 @@
 {
   "id": "memoria",
   "name": "Memoria",
-  "version": "1.1.7",
+  "version": "2.0.3",
   "minAppVersion": "1.4.0",
-  "description": "浮墨式碎片笔记瀑布流，数据永远是纯 Markdown，自由属于你。",
-  "author": "You & CodeBuddy",
-  "authorUrl": "",
+  "description": "Waterfall-style memo plugin for fleeting thoughts, stored as plain Markdown.",
+  "author": "gzcm",
+  "authorUrl": "https://github.com/gzcm/obsidian-memoria",
   "isDesktopOnly": false
 }

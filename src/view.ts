@@ -1,12 +1,17 @@
 import {
   Component, ItemView, MarkdownRenderer, Menu, Notice, Platform, setIcon, TFile, WorkspaceLeaf,
 } from "obsidian";
-import { Memo, MemoriaSettings, RESERVED_TAGS, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS } from "./types";
+import { Memo, MemoriaSettings, RESERVED_TAGS, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS, VIEW_TYPE_YEAR } from "./types";
 import { MemoStore } from "./store";
 import { TagSuggest } from "./tag-suggest";
 import { extractImages, renderImageGrid, showLightbox } from "./image";
 import { renderCalendar } from "./calendar";
-import { normalizeForRender } from "./parser";
+import { SearchTokens } from "./types";
+import { normalizeForRender, htmlToMarkdown } from "./parser";
+import { t } from "./i18n";
+import { parseSearch, matchesSearch } from "./search";
+import { detectMood, moodClass } from "./mood";
+import { exportMemos, ExportFormat } from "./export";
 
 interface MemoFilter {
   tag: string | null;
@@ -15,6 +20,8 @@ interface MemoFilter {
   keyword: string;
   preset: string;
   randomSeed?: number;
+  /** v2.0.3: 高级搜索 token */
+  searchTokens: SearchTokens;
 }
 
 export class MemoriaView extends ItemView {
@@ -22,7 +29,8 @@ export class MemoriaView extends ItemView {
 
   private store: MemoStore;
   private settings: MemoriaSettings;
-  private filter: MemoFilter = { tag: null, year: null, date: null, keyword: "", preset: "all" };
+  private filter: MemoFilter = { tag: null, year: null, date: null, keyword: "", preset: "all",
+    searchTokens: { includeTerms: [], excludeTerms: [], includeTags: [], excludeTags: [], afterDate: null, beforeDate: null, raw: "" } };
   private unsubscribe: (() => void) | null = null;
   private childComponent = new Component();
   private pageLimit: number;
@@ -40,7 +48,7 @@ export class MemoriaView extends ItemView {
   private editBannerEl: HTMLElement | null = null;
   private timeChipEl: HTMLElement | null = null;
 
-  constructor(leaf: WorkspaceLeaf, store: MemoStore, settings: MemoriaSettings) {
+  constructor(leaf: WorkspaceLeaf, store: MemoStore, settings: MemoriaSettings, private saveSettings: () => Promise<void>) {
     super(leaf);
     this.store = store;
     this.settings = settings;
@@ -96,19 +104,23 @@ export class MemoriaView extends ItemView {
     setIcon(searchWrap.createDiv({ cls: "memoria-search-icon" }), "search");
     this.searchEl = searchWrap.createEl("input", {
       cls: "memoria-search",
-      attr: { placeholder: "搜索笔记...", type: "text" },
+      attr: { placeholder: t("search.placeholder"), type: "text" },
     });
     this.searchEl.addEventListener("input", () => {
       this.filter.keyword = this.searchEl.value.trim();
+      this.filter.searchTokens = parseSearch(this.filter.keyword);
       this.pageLimit = this.getInitialPageLimit();
       this.renderList();
     });
 
-    const refreshBtn = searchWrap.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": "刷新" } });
+    // v1.4.5: 顶栏工具区（searchWrap 用 margin-left:auto 推到右侧，tools 紧随其后）
+    const tools = topbar.createDiv({ cls: "memoria-topbar-tools" });
+
+    const refreshBtn = tools.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("common.refresh") } });
     setIcon(refreshBtn, "refresh-cw");
     refreshBtn.addEventListener("click", () => this.store.reloadAll());
 
-    const statsBtn = searchWrap.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": "数据报告" } });
+    const statsBtn = tools.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("toolbar.statsReport") } });
     setIcon(statsBtn, "bar-chart-3");
     statsBtn.addEventListener("click", async () => {
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_STATS);
@@ -118,15 +130,49 @@ export class MemoriaView extends ItemView {
       this.app.workspace.revealLeaf(leaf);
     });
 
+    const yearBtn = tools.createEl("button", {
+      cls: "memoria-icon-btn",
+      attr: { "aria-label": t("toolbar.yearPanorama"), title: t("toolbar.yearPanorama") },
+    });
+    setIcon(yearBtn, "calendar-days");
+    yearBtn.addEventListener("click", async () => {
+      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_YEAR);
+      if (existing.length) { this.app.workspace.revealLeaf(existing[0]); return; }
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.setViewState({ type: VIEW_TYPE_YEAR, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    });
+
+    const densityBtn = tools.createEl("button", {
+      cls: "memoria-icon-btn",
+      attr: { "aria-label": t("density.toggle"), title: t("density.toggle") },
+    });
+    setIcon(densityBtn, this.settings.density === "cozy" ? "scan" : "expand");
+    densityBtn.addEventListener("click", () => {
+      this.settings.density = this.settings.density === "cozy" ? "compact" : "cozy";
+      setIcon(densityBtn, this.settings.density === "cozy" ? "scan" : "expand");
+      this.listEl.toggleClass("is-compact", this.settings.density === "compact");
+      this.saveSettings();
+      this.renderList();
+    });
+
+    const exportBtn = tools.createEl("button", {
+      cls: "memoria-icon-btn",
+      attr: { "aria-label": t("card.exportTooltip"), title: t("card.exportTooltip") },
+    });
+    setIcon(exportBtn, "download");
+    exportBtn.addEventListener("click", e => this.showExportMenu(e));
+
     const menuBtn = topbar.createEl("button", {
       cls: "memoria-icon-btn memoria-sidebar-toggle",
-      attr: { "aria-label": "切换侧栏" },
+      attr: { "aria-label": t("toolbar.toggleSidebar") },
     });
     setIcon(menuBtn, "menu");
     menuBtn.addEventListener("click", () => this.toggleSidebar(!this.contentEl.hasClass("memoria-sidebar-open")));
 
     this.buildInputCard(main);
-    this.listEl = main.createDiv({ cls: "memoria-list" });
+    const listCls = "memoria-list" + (this.settings.density === "compact" ? " is-compact" : "");
+    this.listEl = main.createDiv({ cls: listCls });
     this.listEl.addEventListener("scroll", () => {
       if (this.listEl.scrollTop + this.listEl.clientHeight >= this.listEl.scrollHeight - 200) {
         const filtered = this.getFilteredMemos();
@@ -144,6 +190,7 @@ export class MemoriaView extends ItemView {
     this.tagSuggest = new TagSuggest(this.app, this.inputEl);
 
     this.inputEl.addEventListener("keydown", e => {
+      if (e.isComposing || e.keyCode === 229) return; // IME 组合态
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
         this.submitMemo();
@@ -161,6 +208,12 @@ export class MemoriaView extends ItemView {
       this.autoResizeInput();
     });
     this.inputEl.addEventListener("paste", async e => {
+      // v2.0.3: HTML 粘贴自动转 Markdown
+      const html = e.clipboardData?.getData("text/html");
+      if (html) {
+        const md = htmlToMarkdown(html);
+        if (md) { e.preventDefault(); this.insertAtCursor(md); return; }
+      }
       const items = e.clipboardData?.items;
       if (items) {
         for (const item of Array.from(items)) {
@@ -619,8 +672,17 @@ export class MemoriaView extends ItemView {
         new Notice("✓ 已更新");
         this.exitEditMode();
       } else {
-        await this.store.addMemo(text, this.getEffectiveDate());
-        new Notice("✓ 已记下");
+        // v2.0.3: 按标签筛选时自动加标签
+        let finalText = text;
+        if (this.filter.tag && !this.editingMemo) {
+          const ft = this.filter.tag;
+          const autoRe = new RegExp(`#${escapeRegex(ft)}(?:/|$)`);
+          if (!autoRe.test(finalText)) {
+            finalText = finalText.replace(/\s+$/, "") + `\n#${ft}`;
+          }
+        }
+        await this.store.addMemo(finalText, this.getEffectiveDate());
+        new Notice(t("notice.saved"));
         if (this.settings.clearAfterSave) {
           this.inputEl.value = "";
           this.clearDraft();
@@ -699,22 +761,56 @@ export class MemoriaView extends ItemView {
     const statsEl = this.sidebarEl.createDiv({ cls: "memoria-stats" });
     this.renderStatItem(statsEl, all.length.toString(), "笔记");
     this.renderStatItem(statsEl, uniqueTags.size.toString(), "标签");
-    this.renderStatItem(statsEl, uniqueDates.size.toString(), "天数");
-
-    const switchBtn = statsEl.createEl("button", {
-      cls: "memoria-icon-btn memoria-overview-btn memoria-stats-switch",
-      attr: {
-        "aria-label": this.overviewMode === "heatmap" ? "切换为月历" : "切换为热力图",
-        title: this.overviewMode === "heatmap" ? "切换为月历" : "切换为热力图",
-      },
-    });
-    setIcon(switchBtn, this.overviewMode === "heatmap" ? "calendar" : "activity");
-    switchBtn.addEventListener("click", () => {
-      this.overviewMode = this.overviewMode === "heatmap" ? "calendar" : "heatmap";
-      this.renderSidebar();
-    });
+    this.renderStatItem(statsEl, uniqueDates.size.toString(), t("stats.days"));
 
     this.renderOverview(this.sidebarEl, all);
+
+    // v1.4.0: 每日打卡进度条（热力图下方独立行）
+    if (this.settings.dailyGoal > 0) {
+      const todayMemos = all.filter(m => m.date === todayStr);
+      const done = todayMemos.length;
+      const goal = this.settings.dailyGoal;
+      const pct = Math.min(100, Math.round(done / goal * 100));
+      const isDone = done >= goal && goal > 0;
+      const row = this.sidebarEl.createDiv({ cls: "memoria-daily-goal-row" + (isDone ? " is-done" : "") });
+      const wrap = row.createDiv({ cls: "memoria-daily-goal" });
+      wrap.addEventListener("click", () => {
+        this.filter.preset = "today";
+        this.filter.tag = null;
+        this.filter.year = null;
+        this.filter.date = null;
+        this.pageLimit = this.getInitialPageLimit();
+        this.renderAll();
+      });
+      wrap.setAttr("title", t("list.dailyGoalProgress", { goal, done }));
+      const bar = wrap.createDiv({ cls: "memoria-daily-goal-bar" });
+      bar.createDiv({ cls: "memoria-daily-goal-fill", attr: { style: `width:${pct}%` } });
+      const actions = row.createDiv({ cls: "memoria-daily-goal-actions" });
+      const switchBtn = actions.createEl("button", {
+        cls: "memoria-icon-btn memoria-daily-goal-switch",
+        attr: { "aria-label": this.overviewMode === "heatmap" ? "切换为月历" : "切换为热力图" },
+      });
+      setIcon(switchBtn, this.overviewMode === "heatmap" ? "calendar" : "activity");
+      switchBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        this.overviewMode = this.overviewMode === "heatmap" ? "calendar" : "heatmap";
+        this.renderSidebar();
+      });
+    } else {
+      // 无每日目标：切换按钮独立一行
+      const row = this.sidebarEl.createDiv({ cls: "memoria-daily-goal-row" });
+      const actions = row.createDiv({ cls: "memoria-daily-goal-actions" });
+      const switchBtn = actions.createEl("button", {
+        cls: "memoria-icon-btn memoria-daily-goal-switch",
+        attr: { "aria-label": this.overviewMode === "heatmap" ? "切换为月历" : "切换为热力图" },
+      });
+      setIcon(switchBtn, this.overviewMode === "heatmap" ? "calendar" : "activity");
+      switchBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        this.overviewMode = this.overviewMode === "heatmap" ? "calendar" : "heatmap";
+        this.renderSidebar();
+      });
+    }
 
     this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: "视图" });
     const navItems = [
@@ -821,9 +917,46 @@ export class MemoriaView extends ItemView {
     gridStart.setDate(startOfWeek.getDate() - 13 * 7);
 
     const dateCounts = new Map<string, number>();
-    for (const m of memos) dateCounts.set(m.date, (dateCounts.get(m.date) ?? 0) + 1);
+    const dateMemos = new Map<string, Memo[]>();
+    for (const m of memos) {
+      dateCounts.set(m.date, (dateCounts.get(m.date) ?? 0) + 1);
+      const arr = dateMemos.get(m.date) ?? [];
+      arr.push(m);
+      dateMemos.set(m.date, arr);
+    }
 
     const heatmap = parent.createDiv({ cls: "memoria-heatmap" });
+    let tooltip: HTMLElement | null = null;
+
+    const showTooltip = (cell: HTMLElement, dateStr: string, count: number) => {
+      if (count === 0) return;
+      tooltip?.remove();
+      const dayMemos = dateMemos.get(dateStr) ?? [];
+      tooltip = document.body.createDiv({ cls: "memoria-heatmap-tooltip" });
+      tooltip.style.position = "fixed";
+      tooltip.style.zIndex = "10001";
+      const head = tooltip.createDiv({ cls: "memoria-heatmap-tooltip-head" });
+      head.createSpan({ text: dateStr });
+      head.createSpan({ cls: "memoria-heatmap-tooltip-count", text: t("list.totalCount", { n: count }) });
+      const show = dayMemos.slice(0, 3);
+      for (const m of show) {
+        const row = tooltip.createDiv({ cls: "memoria-heatmap-tooltip-row" });
+        row.createSpan({ cls: "memoria-heatmap-tooltip-time", text: m.time });
+        row.createSpan({ cls: "memoria-heatmap-tooltip-text", text: m.content.split("\n")[0] });
+      }
+      if (dayMemos.length > 3) {
+        tooltip.createDiv({ cls: "memoria-heatmap-tooltip-more", text: `...还有 ${dayMemos.length - 3} 条` });
+      }
+      const rect = cell.getBoundingClientRect();
+      tooltip.style.left = `${Math.round(rect.right + 8)}px`;
+      tooltip.style.top = `${Math.round(rect.top)}px`;
+    };
+
+    const hideTooltip = () => {
+      tooltip?.remove();
+      tooltip = null;
+    };
+
     for (let col = 0; col < 14; col++) {
       const colEl = heatmap.createDiv({ cls: "memoria-heatmap-col" });
       for (let row = 0; row < 7; row++) {
@@ -834,8 +967,12 @@ export class MemoriaView extends ItemView {
         const level = count === 0 ? 0 : count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4;
         const cell = colEl.createDiv({
           cls: `memoria-heatmap-cell level-${level}`,
-          attr: { title: `${dateStr}  ${count} 条` },
+          attr: { title: count > 0 ? "" : `${dateStr}  0 条` },
         });
+        if (count > 0) {
+          cell.addEventListener("mouseenter", () => showTooltip(cell, dateStr, count));
+          cell.addEventListener("mouseleave", hideTooltip);
+        }
         if (date > today) cell.addClass("future");
       }
     }
@@ -890,29 +1027,13 @@ export class MemoriaView extends ItemView {
 
   private getFilteredMemos(): Memo[] {
     let memos = this.store.getAll();
-    const raw = this.filter.keyword.trim();
-    const tagsFromKeyword: string[] = [];
-    const keywordTokens: string[] = [];
-    if (raw) {
-      const tagTokenRe = /^#([A-Za-z0-9_一-鿿/]+)$/;
-      for (const tok of raw.split(/\s+/).filter(t => t !== "")) {
-        const m = tok.match(tagTokenRe);
-        if (m) tagsFromKeyword.push(m[1]);
-        else keywordTokens.push(tok.toLowerCase());
-      }
-    }
 
     memos = memos.filter(m => {
       if (this.filter.year && !m.date.startsWith(this.filter.year)) return false;
       if (this.filter.date && m.date !== this.filter.date) return false;
-      const requiredTags = this.filter.tag ? [this.filter.tag, ...tagsFromKeyword] : tagsFromKeyword;
-      for (const t of requiredTags) {
-        if (!m.tags.some(x => x === t || x.startsWith(t + "/"))) return false;
-      }
-      if (keywordTokens.length) {
-        const lower = m.content.toLowerCase();
-        for (const k of keywordTokens) if (!lower.includes(k)) return false;
-      }
+      if (this.filter.tag && !m.tags.some(x => x === this.filter.tag || x.startsWith(this.filter.tag + "/"))) return false;
+      // 使用新的搜索 token 匹配（支持 after:/before:/date:/-keyword/-#tag）
+      if (!matchesSearch(m.content, m.tags, m.date, this.filter.searchTokens)) return false;
       return true;
     });
 
@@ -1028,11 +1149,14 @@ export class MemoriaView extends ItemView {
   }
 
   private renderMemoCard(parent: HTMLElement, memo: Memo) {
+    const mood = this.settings.enableMoodColoring ? detectMood(memo.content) : "neutral";
+    const moodCls = mood !== "neutral" ? ` ${moodClass(mood)}` : "";
     const card = parent.createDiv({
       cls: "memoria-card" +
         (memo.isPinned ? " is-pinned" : "") +
         (memo.isStarred ? " is-starred" : "") +
-        (this.editingMemo === memo ? " is-editing" : ""),
+        (this.editingMemo === memo ? " is-editing" : "") +
+        moodCls,
     });
     card.addEventListener("dblclick", e => {
       const target = e.target as HTMLElement;
@@ -1151,6 +1275,44 @@ export class MemoriaView extends ItemView {
     menu.showAtMouseEvent(e);
   }
 
+  private async showExportMenu(e: MouseEvent) {
+    const menu = new Menu();
+    const memos = this.getFilteredMemos();
+    menu.addItem(i => i.setTitle(t("card.exportMd")).setIcon("file-text").onClick(async () => {
+      try {
+        await exportMemos(this.app, "md", memos, this.describeFilterOnly(), "Memoria/exports");
+      } catch (err: any) { new Notice(t("notice.exportFailed", { msg: err.message })); }
+    }));
+    menu.addItem(i => i.setTitle(t("card.exportHtml")).setIcon("file-code").onClick(async () => {
+      try {
+        const path = await exportMemos(this.app, "html", memos, this.describeFilterOnly(), "Memoria/exports");
+        new Notice(t("notice.exportDone", { n: memos.length, path }));
+      } catch (err: any) { new Notice(t("notice.exportFailed", { msg: err.message })); }
+    }));
+    menu.addItem(i => i.setTitle(t("card.exportJson")).setIcon("file-json").onClick(async () => {
+      try {
+        await exportMemos(this.app, "json", memos, this.describeFilterOnly(), "Memoria/exports");
+      } catch (err: any) { new Notice(t("notice.exportFailed", { msg: err.message })); }
+    }));
+    menu.showAtMouseEvent(e);
+  }
+
+  private describeFilterOnly(): string {
+    const parts: string[] = [];
+    const presetLabels: Record<string, string> = {
+      today: t("sidebar.today"), week: t("sidebar.week"), random: t("sidebar.random"),
+      "on-this-day": t("list.presetOnThisDay"),
+      "no-tag": t("sidebar.noTag"), "with-image": t("sidebar.withImage"), "with-link": t("sidebar.withLink"),
+      pinned: t("list.presetPinned"), starred: t("list.presetStarred"),
+    };
+    if (this.filter.preset !== "all") parts.push(presetLabels[this.filter.preset] ?? this.filter.preset);
+    if (this.filter.year) parts.push(this.filter.year);
+    if (this.filter.date) parts.push(this.filter.date);
+    if (this.filter.tag) parts.push(`#${this.filter.tag}`);
+    if (this.filter.keyword) parts.push(this.filter.keyword);
+    return parts.join(" · ") || t("sidebar.all");
+  }
+
   private confirmAsync(message: string): Promise<boolean> {
     return new Promise(resolve => {
       const backdrop = document.body.createDiv({ cls: "memoria-modal-backdrop" });
@@ -1209,6 +1371,10 @@ export class MemoriaView extends ItemView {
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
     new Notice("已引用，继续补充想法吧");
   }
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function toDateStr(date: Date): string {

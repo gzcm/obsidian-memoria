@@ -2,10 +2,17 @@ import { App, normalizePath, TFile } from "obsidian";
 import { Memo, MemoriaSettings, TAG_PINNED, TAG_STARRED } from "./types";
 import { parseMemos, formatDate, formatTime, getWeekday, buildMemoBlock } from "./parser";
 
+interface ReloadLock {
+  running: boolean;
+  pending: boolean;
+}
+
 export class MemoStore {
   private memos: Memo[] = [];
   private listeners: (() => void)[] = [];
   private loading = false;
+  /** v2.0.3: 防 reloadFile 竞态 */
+  private reloadLocks = new Map<string, ReloadLock>();
 
   constructor(private app: App, private settings: MemoriaSettings) {}
 
@@ -18,6 +25,11 @@ export class MemoStore {
     for (const l of this.listeners) l();
   }
 
+  /** v2.0.3: 公开通知变更（供 year-view 等使用） */
+  notifyChange() {
+    this.emit();
+  }
+
   getAll(): Memo[] {
     return this.memos;
   }
@@ -27,11 +39,12 @@ export class MemoStore {
     this.loading = true;
     try {
       const files = this.collectFiles();
+      const results = await Promise.all(files.map(async f => {
+        const content = await this.app.vault.read(f);
+        return parseMemos(f.path, content);
+      }));
       const all: Memo[] = [];
-      for (const file of files) {
-        const content = await this.app.vault.read(file);
-        all.push(...parseMemos(file.path, content));
-      }
+      for (const arr of results) all.push(...arr);
       this.sortMemos(all);
       this.memos = all;
       this.emit();
@@ -40,14 +53,32 @@ export class MemoStore {
     }
   }
 
+  /** v2.0.3: 竞态安全版 reloadFile */
   async reloadFile(file: TFile) {
     if (!this.isInFolder(file)) return;
-    const content = await this.app.vault.read(file);
-    const parsed = parseMemos(file.path, content);
-    this.memos = this.memos.filter(m => m.file !== file.path);
-    this.memos.push(...parsed);
-    this.sortMemos(this.memos);
-    this.emit();
+    const key = file.path;
+    const existing = this.reloadLocks.get(key);
+    if (existing && existing.running) {
+      existing.pending = true;
+      return;
+    }
+    const lock: ReloadLock = { running: true, pending: false };
+    this.reloadLocks.set(key, lock);
+    try {
+      do {
+        lock.pending = false;
+        const current = this.app.vault.getAbstractFileByPath(key);
+        if (!(current instanceof TFile)) break;
+        const content = await this.app.vault.read(current);
+        const parsed = parseMemos(current.path, content);
+        this.memos = this.memos.filter(m => m.file !== current.path);
+        this.memos.push(...parsed);
+        this.sortMemos(this.memos);
+        this.emit();
+      } while (lock.pending);
+    } finally {
+      this.reloadLocks.delete(key);
+    }
   }
 
   removeFile(filePath: string) {
@@ -66,15 +97,23 @@ export class MemoStore {
     });
   }
 
+  /** v2.0.3: 忽略 _ 前缀文件（_trash.md 等） */
   collectFiles(): TFile[] {
     const folder = normalizePath(this.settings.folder);
+    const exportsPrefix = `${folder}/exports/`;
     return this.app.vault.getMarkdownFiles().filter(f => {
+      if (f.name.startsWith("_")) return false;
+      // v2.0.3: 忽略导出文件目录，防止导出的 md 被当作笔记加载
+      if (f.path.startsWith(exportsPrefix)) return false;
       return f.path === `${folder}/${f.name}` || f.path.startsWith(`${folder}/`);
     });
   }
 
   isInFolder(file: TFile): boolean {
+    if (file.name.startsWith("_")) return false;
     const folder = normalizePath(this.settings.folder);
+    // v2.0.3: 忽略导出文件目录
+    if (file.path.startsWith(`${folder}/exports/`)) return false;
     return file.path.startsWith(`${folder}/`);
   }
 
@@ -110,11 +149,98 @@ export class MemoStore {
     if (!file) return;
     const raw = await this.app.vault.read(file as TFile);
     const lines = raw.split(/\r?\n/);
-    const [start, end] = memo.range;
+    let [start, end] = memo.range;
+    const timeLineRe = new RegExp(`^-\\s+${escapeRegex(memo.time)}(?:\\s|$)`);
+    // 安全检查: range 可能因文件变化失效
+    if (!(start >= 0 && start < lines.length && timeLineRe.test(lines[start]))) {
+      const reparsed = parseMemos(file.path, raw)
+        .filter(m => m.date === memo.date && m.time === memo.time && m.content === memo.content);
+      if (reparsed.length === 0) throw new Error("文件内容已变更，找不到原笔记位置，请关闭编辑后刷新重试");
+      reparsed.sort((a, b) => {
+        const da = Math.abs(a.range[0] - start), db = Math.abs(b.range[0] - start);
+        return da !== db ? da - db : a.range[0] - b.range[0];
+      });
+      [start, end] = reparsed[0].range;
+    }
     const newBlock = buildMemoBlock(memo.time, newContent).split("\n");
     lines.splice(start, end - start + 1, ...newBlock);
     await this.app.vault.modify(file as TFile, lines.join("\n"));
     await this.reloadFile(file as TFile);
+  }
+
+  /** v2.0.3: 编辑笔记内容 + 时间（可跨日/跨年） */
+  async editMemoDateTime(memo: Memo, newDate: Date, newContent?: string) {
+    const file = this.app.vault.getAbstractFileByPath(memo.file);
+    if (!file) throw new Error("找不到原笔记文件");
+    const content = (newContent ?? memo.content).trim();
+    if (!content) throw new Error("内容不能为空");
+
+    const year = newDate.getFullYear().toString();
+    const dateStr = formatDate(newDate);
+    const timeStr = formatTime(newDate);
+    const weekday = getWeekday(newDate);
+
+    // 完全没变，跳过
+    if (dateStr === memo.date && timeStr === memo.time && content === memo.content) return;
+
+    // 1. 从旧位置删除
+    const raw = await this.app.vault.read(file as TFile);
+    const lines = raw.split(/\r?\n/);
+    let [start, end] = memo.range;
+    const timeLineRe = new RegExp(`^-\\s+${escapeRegex(memo.time)}(?:\\s|$)`);
+    if (!(start >= 0 && start < lines.length && timeLineRe.test(lines[start]))) {
+      const reparsed = parseMemos(file.path, raw)
+        .filter(m => m.date === memo.date && m.time === memo.time && m.content === memo.content);
+      if (reparsed.length === 0) throw new Error("文件内容已变更，找不到原笔记位置，请关闭编辑后刷新重试");
+      reparsed.sort((a, b) => {
+        const da = Math.abs(a.range[0] - start), db = Math.abs(b.range[0] - start);
+        return da !== db ? da - db : a.range[0] - b.range[0];
+      });
+      [start, end] = reparsed[0].range;
+    }
+    lines.splice(start, end - start + 1);
+    this.removeOrphanDateHeaders(lines);
+    // 清理多余空行
+    const cleaned: string[] = [];
+    let blanks = 0;
+    for (const line of lines) {
+      if (line.trim() === "") {
+        blanks++;
+        if (blanks <= 2) cleaned.push(line);
+      } else {
+        blanks = 0;
+        cleaned.push(line);
+      }
+    }
+    await this.app.vault.modify(file as TFile, cleaned.join("\n"));
+
+    // 2. 插入到新位置
+    const folder = normalizePath(this.settings.folder);
+    await this.ensureFolder(folder);
+    const newPath = `${folder}/${year}.md`;
+    if (newPath === file.path) {
+      // 同年: 直接插入
+      const newRaw = await this.app.vault.read(file as TFile);
+      const updated = this.insertMemoIntoYear(newRaw, year, dateStr, weekday, timeStr, content);
+      await this.app.vault.modify(file as TFile, updated);
+      await this.reloadFile(file as TFile);
+    } else {
+      // 跨年
+      const targetFile = this.app.vault.getAbstractFileByPath(newPath);
+      if (targetFile) {
+        const targetRaw = await this.app.vault.read(targetFile as TFile);
+        const updated = this.insertMemoIntoYear(targetRaw, year, dateStr, weekday, timeStr, content);
+        await this.app.vault.modify(targetFile as TFile, updated);
+      } else {
+        await this.app.vault.create(
+          newPath,
+          `# ${year}\n\n## ${dateStr} ${weekday}\n\n${buildMemoBlock(timeStr, content)}\n\n`
+        );
+      }
+      await this.reloadFile(file as TFile);
+      const newFile = this.app.vault.getAbstractFileByPath(newPath);
+      if (newFile) await this.reloadFile(newFile as TFile);
+    }
   }
 
   async deleteMemo(memo: Memo) {
@@ -175,9 +301,27 @@ export class MemoStore {
         "# Memoria 回收站\n\n> 这里保存被删除的笔记。停用插件后依然可读，可手动恢复或清空。\n> 该文件不会被 Memoria 主视图识别为普通笔记。\n" + entry
       );
     } else {
-      const raw = await this.app.vault.read(existing as TFile);
-      await this.app.vault.modify(existing as TFile, raw + entry);
+      let raw = await this.app.vault.read(existing as TFile);
+      raw = raw + entry;
+      raw = this.trimTrashToLimit(raw, this.settings.trashMaxItems);
+      await this.app.vault.modify(existing as TFile, raw);
     }
+  }
+
+  /** v2.0.3: 回收站上限裁剪 */
+  private trimTrashToLimit(raw: string, limit: number): string {
+    if (!limit || limit <= 0) return raw;
+    const lines = raw.split(/\r?\n/);
+    const trashHeadRe = /^##\s+已删除\s+/;
+    const indices: number[] = [];
+    for (let i = 0; i < lines.length; i++) if (trashHeadRe.test(lines[i])) indices.push(i);
+    if (indices.length <= limit) return raw;
+    const cutoff = indices[indices.length - limit];
+    const headerEnd = indices[0];
+    const header = lines.slice(0, headerEnd);
+    const tail = lines.slice(cutoff);
+    while (header.length && header[header.length - 1].trim() === "") header.pop();
+    return header.join("\n") + "\n\n" + tail.join("\n");
   }
 
   async togglePinned(memo: Memo) { await this.toggleReservedTag(memo, TAG_PINNED); }
@@ -191,7 +335,7 @@ export class MemoStore {
       newContent = memo.content.replace(re, "");
       newContent = newContent.split("\n").map(l => l.replace(/[ \t]+$/, "")).join("\n")
         .replace(/\n{3,}/g, "\n\n").trim();
-      if (newContent === "") newContent = " ";
+      if (newContent === "") newContent = `（已取消${tag}）`;
     } else {
       const lines = memo.content.split("\n");
       if (lines.length === 0 || lines[0].trim() === "") lines[0] = `#${tag}`;
@@ -240,9 +384,23 @@ export class MemoStore {
     const dateIdx = lines.findIndex(l => dateRe.test(l));
 
     if (dateIdx >= 0) {
+      // v2.0.3: 按时间升序找插入位置
       let sectionEnd = lines.length;
       for (let i = dateIdx + 1; i < lines.length; i++) {
         if (/^#{1,2}\s+/.test(lines[i])) { sectionEnd = i; break; }
+      }
+      const timeLineRe = /^-\s+(\d{2}:\d{2})(?:\s|$)/;
+      let insertIdx = -1;
+      for (let i = dateIdx + 1; i < sectionEnd; i++) {
+        const m = lines[i].match(timeLineRe);
+        if (m && m[1] > time) { insertIdx = i; break; }
+      }
+      if (insertIdx >= 0) {
+        // 插入前回退空行
+        let pos = insertIdx;
+        while (pos > dateIdx + 1 && lines[pos - 1].trim() === "") pos--;
+        lines.splice(pos, 0, memoBlock, "");
+        return lines.join("\n");
       }
       const insertAt = this.trimTrailingBlank(lines, dateIdx + 1, sectionEnd);
       lines.splice(insertAt, 0, "", memoBlock);
@@ -250,16 +408,28 @@ export class MemoStore {
     }
 
     const laterDateRe = /^##\s+(\d{4}-\d{2}-\d{2})/;
+    const yearHeadRe = /^#\s+\d{4}\s*$/;
     let insertBefore = -1;
+    let yearSectionEnd = lines.length;
     for (let i = yearIdx + 1; i < lines.length; i++) {
+      if (yearHeadRe.test(lines[i])) { yearSectionEnd = i; break; }
+    }
+    for (let i = yearIdx + 1; i < yearSectionEnd; i++) {
       const m = lines[i].match(laterDateRe);
       if (m && m[1] > dateStr) { insertBefore = i; break; }
     }
 
     const newSection = ["", `## ${dateStr} ${weekday}`, "", memoBlock, ""];
     if (insertBefore === -1) {
-      if (lines[lines.length - 1]?.trim() !== "") lines.push("");
-      lines.push(...newSection.filter((_, i) => i > 0));
+      if (yearSectionEnd < lines.length) {
+        // 在年份结束前插入
+        let pos = yearSectionEnd;
+        while (pos > yearIdx + 1 && lines[pos - 1].trim() === "") pos--;
+        lines.splice(pos, 0, "", ...newSection.slice(1));
+      } else {
+        while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+        lines.push("", `## ${dateStr} ${weekday}`, "", memoBlock, "");
+      }
     } else {
       lines.splice(insertBefore, 0, ...newSection);
     }
