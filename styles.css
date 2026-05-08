@@ -1,4 +1,4 @@
-﻿/* ================================================================
+/* ================================================================
  * Memoria 样式（完全基于 Obsidian CSS 变量，自动跟随主题）
  * ================================================================ */
 
@@ -3381,6 +3381,11 @@
   -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
   mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
 }
+	.memoria-list.is-compact .memoria-card-body.is-expanded {
+	  max-height: none;
+	  -webkit-mask-image: none;
+	  mask-image: none;
+	}
 .memoria-list.is-compact .memoria-card {
   padding: 10px 14px;
 }

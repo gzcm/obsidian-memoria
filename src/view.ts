@@ -743,7 +743,7 @@ export class MemoriaView extends ItemView {
     const all = this.store.getAll();
     const uniqueTags = new Set<string>();
     const uniqueDates = new Set<string>();
-    let imgCount = 0, linkCount = 0, pinnedCount = 0, starredCount = 0, noTagCount = 0, onThisDayCount = 0;
+    let imgCount = 0, linkCount = 0, pinnedCount = 0, starredCount = 0, noTagCount = 0, onThisDayCount = 0, openTaskCount = 0;
     const todayStr = toDateStr(new Date());
     const todayMMDD = todayStr.slice(5);
 
@@ -756,6 +756,7 @@ export class MemoriaView extends ItemView {
       if (m.isStarred) starredCount++;
       if (m.date.slice(5) === todayMMDD && m.date !== todayStr) onThisDayCount++;
       if (m.tags.filter(t => !RESERVED_TAGS.has(t)).length === 0) noTagCount++;
+      if (m.hasOpenTask) openTaskCount++;
     }
 
     const statsEl = this.sidebarEl.createDiv({ cls: "memoria-stats" });
@@ -819,6 +820,7 @@ export class MemoriaView extends ItemView {
       { key: "starred", icon: "star", text: "收藏", count: starredCount },
       { key: "today", icon: "calendar", text: "今天" },
       { key: "week", icon: "calendar-days", text: "本周" },
+      { key: "todo", icon: "square-check", text: "待办", count: openTaskCount },
       { key: "on-this-day", icon: "history", text: "每日回顾", count: onThisDayCount },
       { key: "random", icon: "shuffle", text: "随机回顾" },
     ];
@@ -1049,6 +1051,8 @@ export class MemoriaView extends ItemView {
       const today = new Date();
       const mmdd = `${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
       memos = memos.filter(m => m.date.slice(5) === mmdd && m.date !== todayStr);
+    } else if (this.filter.preset === "todo") {
+      memos = memos.filter(m => m.hasOpenTask);
     } else if (this.filter.preset === "no-tag") {
       memos = memos.filter(m => m.tags.filter(t => !RESERVED_TAGS.has(t)).length === 0);
     } else if (this.filter.preset === "with-image") {
@@ -1084,9 +1088,19 @@ export class MemoriaView extends ItemView {
 
     if (filtered.length === 0) {
       const empty = this.listEl.createDiv({ cls: "memoria-empty" });
-      empty.createDiv({ cls: "memoria-empty-emoji", text: "📭" });
-      empty.createDiv({ cls: "memoria-empty-text", text: "这里还没有笔记哦" });
-      empty.createDiv({ cls: "memoria-empty-sub", text: "在顶部输入框写下你的第一个想法吧～" });
+      if (this.filter.preset === "todo") {
+        empty.createDiv({ cls: "memoria-empty-emoji", text: "✅" });
+        empty.createDiv({ cls: "memoria-empty-text", text: t("empty.todo") });
+        empty.createDiv({ cls: "memoria-empty-sub", text: t("empty.todoSub") });
+      } else if (this.filter.preset === "on-this-day") {
+        empty.createDiv({ cls: "memoria-empty-emoji", text: "🕰️" });
+        empty.createDiv({ cls: "memoria-empty-text", text: t("empty.onThisDay") });
+        empty.createDiv({ cls: "memoria-empty-sub", text: t("empty.onThisDaySub") });
+      } else {
+        empty.createDiv({ cls: "memoria-empty-emoji", text: "📭" });
+        empty.createDiv({ cls: "memoria-empty-text", text: t("empty.default") });
+        empty.createDiv({ cls: "memoria-empty-sub", text: t("empty.defaultSub") });
+      }
       return;
     }
 
@@ -1137,6 +1151,7 @@ export class MemoriaView extends ItemView {
     const presetLabels: Record<string, string> = {
       today: "今天", week: "本周", random: "随机回顾",
       "on-this-day": "📅 每日回顾",
+      todo: "📋 待办",
       "no-tag": "无标签", "with-image": "有图片", "with-link": "有链接",
       pinned: "📌 置顶", starred: "⭐ 收藏",
     };
@@ -1182,6 +1197,34 @@ export class MemoriaView extends ItemView {
       MarkdownRenderer.render(this.app, normalizeForRender(bodyText), body, memo.file, this.childComponent);
       this.bindTaskCheckboxes(body, memo, bodyText);
       this.wrapWideTables(body);
+
+      // v1.3: 长笔记折叠
+      const lineLimit = this.settings.collapseLineLimit;
+      if (lineLimit > 0) {
+        const textLines = bodyText.split("\n").filter(l => l.trim() !== "").length;
+        if (textLines > lineLimit) {
+          body.addClass("is-collapsed");
+          body.style.setProperty("--memoria-collapse-max", `${lineLimit * 1.6}em`);
+          const toggle = body.createDiv({ cls: "memoria-collapse-toggle" });
+          const iconSpan = toggle.createSpan({ cls: "memoria-collapse-icon" });
+          setIcon(iconSpan, "chevron-down");
+          toggle.createSpan({ text: " 继续阅读" });
+          toggle.addEventListener("click", e => {
+            e.stopPropagation();
+            if (body.hasClass("is-collapsed")) {
+              body.removeClass("is-collapsed");
+              body.addClass("is-expanded");
+              setIcon(iconSpan, "chevron-up");
+              toggle.querySelector(":scope > span:last-child")?.setText(" 收起");
+            } else {
+              body.addClass("is-collapsed");
+              body.removeClass("is-expanded");
+              setIcon(iconSpan, "chevron-down");
+              toggle.querySelector(":scope > span:last-child")?.setText(" 继续阅读");
+            }
+          });
+        }
+      }
     }
     if (images.length) renderImageGrid(card, images, idx => showLightbox(images, idx));
 
@@ -1302,6 +1345,7 @@ export class MemoriaView extends ItemView {
     const presetLabels: Record<string, string> = {
       today: t("sidebar.today"), week: t("sidebar.week"), random: t("sidebar.random"),
       "on-this-day": t("list.presetOnThisDay"),
+      todo: "📋 " + t("sidebar.todo"),
       "no-tag": t("sidebar.noTag"), "with-image": t("sidebar.withImage"), "with-link": t("sidebar.withLink"),
       pinned: t("list.presetPinned"), starred: t("list.presetStarred"),
     };

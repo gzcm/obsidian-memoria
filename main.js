@@ -1315,7 +1315,7 @@ var zhCN = {
   "settings.exportTheme.lavender": "\u{1F49C} \u85B0\u8863\u8349",
   "settings.exportTheme.midnight": "\u{1F319} \u5348\u591C\u84DD",
   "settings.exportTheme.charcoal": "\u26AB \u6728\u70AD\u9ED1",
-  "sets.collapse.name": "\u957F\u7B14\u8BB0\u81EA\u52A8\u6298\u53E0",
+  "settings.collapse.name": "\u957F\u7B14\u8BB0\u81EA\u52A8\u6298\u53E0",
   "settings.collapse.desc": "\u8D85\u8FC7\u8BBE\u5B9A\u884C\u6570\u7684\u7B14\u8BB0\u4F1A\u81EA\u52A8\u6298\u53E0\uFF0C\u5E95\u90E8\u663E\u793A\u300C\u7EE7\u7EED\u9605\u8BFB\u300D\u6309\u94AE\u3002\u56FE\u7247\u59CB\u7EC8\u5B8C\u6574\u663E\u793A\uFF0C\u53EA\u6298\u53E0\u6587\u5B57\u90E8\u5206\u3002",
   "settings.collapse.0": "\u6C38\u4E0D\u6298\u53E0",
   "settings.collapse.4": "4 \u884C",
@@ -2861,7 +2861,7 @@ ${indent}${marker}`);
     const all = this.store.getAll();
     const uniqueTags = /* @__PURE__ */ new Set();
     const uniqueDates = /* @__PURE__ */ new Set();
-    let imgCount = 0, linkCount = 0, pinnedCount = 0, starredCount = 0, noTagCount = 0, onThisDayCount = 0;
+    let imgCount = 0, linkCount = 0, pinnedCount = 0, starredCount = 0, noTagCount = 0, onThisDayCount = 0, openTaskCount = 0;
     const todayStr = toDateStr(/* @__PURE__ */ new Date());
     const todayMMDD = todayStr.slice(5);
     for (const m of all) {
@@ -2873,6 +2873,7 @@ ${indent}${marker}`);
       if (m.isStarred) starredCount++;
       if (m.date.slice(5) === todayMMDD && m.date !== todayStr) onThisDayCount++;
       if (m.tags.filter((t2) => !RESERVED_TAGS.has(t2)).length === 0) noTagCount++;
+      if (m.hasOpenTask) openTaskCount++;
     }
     const statsEl = this.sidebarEl.createDiv({ cls: "memoria-stats" });
     this.renderStatItem(statsEl, all.length.toString(), "\u7B14\u8BB0");
@@ -2930,6 +2931,7 @@ ${indent}${marker}`);
       { key: "starred", icon: "star", text: "\u6536\u85CF", count: starredCount },
       { key: "today", icon: "calendar", text: "\u4ECA\u5929" },
       { key: "week", icon: "calendar-days", text: "\u672C\u5468" },
+      { key: "todo", icon: "square-check", text: "\u5F85\u529E", count: openTaskCount },
       { key: "on-this-day", icon: "history", text: "\u6BCF\u65E5\u56DE\u987E", count: onThisDayCount },
       { key: "random", icon: "shuffle", text: "\u968F\u673A\u56DE\u987E" }
     ];
@@ -3147,6 +3149,8 @@ ${indent}${marker}`);
       const today = /* @__PURE__ */ new Date();
       const mmdd = `${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
       memos = memos.filter((m) => m.date.slice(5) === mmdd && m.date !== todayStr);
+    } else if (this.filter.preset === "todo") {
+      memos = memos.filter((m) => m.hasOpenTask);
     } else if (this.filter.preset === "no-tag") {
       memos = memos.filter((m) => m.tags.filter((t2) => !RESERVED_TAGS.has(t2)).length === 0);
     } else if (this.filter.preset === "with-image") {
@@ -3182,9 +3186,19 @@ ${indent}${marker}`);
     }
     if (filtered.length === 0) {
       const empty = this.listEl.createDiv({ cls: "memoria-empty" });
-      empty.createDiv({ cls: "memoria-empty-emoji", text: "\u{1F4ED}" });
-      empty.createDiv({ cls: "memoria-empty-text", text: "\u8FD9\u91CC\u8FD8\u6CA1\u6709\u7B14\u8BB0\u54E6" });
-      empty.createDiv({ cls: "memoria-empty-sub", text: "\u5728\u9876\u90E8\u8F93\u5165\u6846\u5199\u4E0B\u4F60\u7684\u7B2C\u4E00\u4E2A\u60F3\u6CD5\u5427\uFF5E" });
+      if (this.filter.preset === "todo") {
+        empty.createDiv({ cls: "memoria-empty-emoji", text: "\u2705" });
+        empty.createDiv({ cls: "memoria-empty-text", text: t("empty.todo") });
+        empty.createDiv({ cls: "memoria-empty-sub", text: t("empty.todoSub") });
+      } else if (this.filter.preset === "on-this-day") {
+        empty.createDiv({ cls: "memoria-empty-emoji", text: "\u{1F570}\uFE0F" });
+        empty.createDiv({ cls: "memoria-empty-text", text: t("empty.onThisDay") });
+        empty.createDiv({ cls: "memoria-empty-sub", text: t("empty.onThisDaySub") });
+      } else {
+        empty.createDiv({ cls: "memoria-empty-emoji", text: "\u{1F4ED}" });
+        empty.createDiv({ cls: "memoria-empty-text", text: t("empty.default") });
+        empty.createDiv({ cls: "memoria-empty-sub", text: t("empty.defaultSub") });
+      }
       return;
     }
     const page = filtered.slice(0, this.pageLimit);
@@ -3230,6 +3244,7 @@ ${indent}${marker}`);
       week: "\u672C\u5468",
       random: "\u968F\u673A\u56DE\u987E",
       "on-this-day": "\u{1F4C5} \u6BCF\u65E5\u56DE\u987E",
+      todo: "\u{1F4CB} \u5F85\u529E",
       "no-tag": "\u65E0\u6807\u7B7E",
       "with-image": "\u6709\u56FE\u7247",
       "with-link": "\u6709\u94FE\u63A5",
@@ -3279,6 +3294,33 @@ ${indent}${marker}`);
       import_obsidian6.MarkdownRenderer.render(this.app, normalizeForRender(bodyText), body, memo.file, this.childComponent);
       this.bindTaskCheckboxes(body, memo, bodyText);
       this.wrapWideTables(body);
+      const lineLimit = this.settings.collapseLineLimit;
+      if (lineLimit > 0) {
+        const textLines = bodyText.split("\n").filter((l) => l.trim() !== "").length;
+        if (textLines > lineLimit) {
+          body.addClass("is-collapsed");
+          body.style.setProperty("--memoria-collapse-max", `${lineLimit * 1.6}em`);
+          const toggle = body.createDiv({ cls: "memoria-collapse-toggle" });
+          const iconSpan = toggle.createSpan({ cls: "memoria-collapse-icon" });
+          (0, import_obsidian6.setIcon)(iconSpan, "chevron-down");
+          toggle.createSpan({ text: " \u7EE7\u7EED\u9605\u8BFB" });
+          toggle.addEventListener("click", (e) => {
+            var _a, _b;
+            e.stopPropagation();
+            if (body.hasClass("is-collapsed")) {
+              body.removeClass("is-collapsed");
+              body.addClass("is-expanded");
+              (0, import_obsidian6.setIcon)(iconSpan, "chevron-up");
+              (_a = toggle.querySelector(":scope > span:last-child")) == null ? void 0 : _a.setText(" \u6536\u8D77");
+            } else {
+              body.addClass("is-collapsed");
+              body.removeClass("is-expanded");
+              (0, import_obsidian6.setIcon)(iconSpan, "chevron-down");
+              (_b = toggle.querySelector(":scope > span:last-child")) == null ? void 0 : _b.setText(" \u7EE7\u7EED\u9605\u8BFB");
+            }
+          });
+        }
+      }
     }
     if (images.length) renderImageGrid(card, images, (idx) => showLightbox(images, idx));
     const visibleTags = tags.filter((t2) => !RESERVED_TAGS.has(t2));
@@ -3405,6 +3447,7 @@ ${indent}${marker}`);
       week: t("sidebar.week"),
       random: t("sidebar.random"),
       "on-this-day": t("list.presetOnThisDay"),
+      todo: "\u{1F4CB} " + t("sidebar.todo"),
       "no-tag": t("sidebar.noTag"),
       "with-image": t("sidebar.withImage"),
       "with-link": t("sidebar.withLink"),

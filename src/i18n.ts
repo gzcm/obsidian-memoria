@@ -166,7 +166,7 @@ const zhCN: Record<string, string> = {
   "settings.exportTheme.lavender": "💜 薰衣草",
   "settings.exportTheme.midnight": "🌙 午夜蓝",
   "settings.exportTheme.charcoal": "⚫ 木炭黑",
-  "sets.collapse.name": "长笔记自动折叠",
+  "settings.collapse.name": "长笔记自动折叠",
   "settings.collapse.desc": "超过设定行数的笔记会自动折叠，底部显示「继续阅读」按钮。图片始终完整显示，只折叠文字部分。",
   "settings.collapse.0": "永不折叠",
   "settings.collapse.4": "4 行",
