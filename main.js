@@ -847,9 +847,7 @@ function renderCalendar(container, memos, state, initialYear, initialMonth) {
         const dot = cell.createDiv({ cls: "memoria-cal-dot" });
         dot.addClass(`level-${count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4}`);
       }
-      if (count > 0 || dateStr === todayStr) {
-        cell.addEventListener("click", () => state.onPickDate(dateStr));
-      }
+      cell.addEventListener("click", () => state.onPickDate(dateStr));
     }
   };
   render();
@@ -1078,10 +1076,12 @@ var _MemoriaView = class _MemoriaView extends import_obsidian5.ItemView {
     sendBtn.addEventListener("click", () => this.submitMemo());
   }
   getEffectiveDate() {
+    var _a;
     const now = /* @__PURE__ */ new Date();
-    if (this.timeOverride === null) return now;
-    const [h, m] = this.timeOverride.split(":").map((n) => parseInt(n, 10));
-    const d = new Date(now);
+    const baseDate = this.filter.date ? /* @__PURE__ */ new Date(this.filter.date + "T00:00:00") : now;
+    if (this.timeOverride === null && !this.filter.date) return now;
+    const [h, m] = ((_a = this.timeOverride) != null ? _a : `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`).split(":").map((n) => parseInt(n, 10));
+    const d = new Date(baseDate);
     d.setHours(h, m, 0, 0);
     return d;
   }
@@ -1090,8 +1090,14 @@ var _MemoriaView = class _MemoriaView extends import_obsidian5.ItemView {
     const d = this.getEffectiveDate();
     const hh = d.getHours().toString().padStart(2, "0");
     const mm = d.getMinutes().toString().padStart(2, "0");
-    this.timeChipEl.setText(`${hh}:${mm}`);
-    this.timeChipEl.toggleClass("is-overridden", this.timeOverride !== null);
+    const isDateOverridden = this.filter.date !== null;
+    if (isDateOverridden) {
+      const mmdd = `${d.getMonth() + 1}\u6708${d.getDate()}\u65E5`;
+      this.timeChipEl.setText(`${mmdd} ${hh}:${mm}`);
+    } else {
+      this.timeChipEl.setText(`${hh}:${mm}`);
+    }
+    this.timeChipEl.toggleClass("is-overridden", this.timeOverride !== null || isDateOverridden);
   }
   stopTimeTick() {
     if (this.timeTickHandle !== null) {
@@ -1628,6 +1634,7 @@ ${indent}${marker}`);
           this.filter.date = this.filter.date === date ? null : date;
           this.filter.preset = "all";
           this.pageLimit = this.getInitialPageLimit();
+          this.refreshTimeChip();
           this.renderAll();
         }
       });

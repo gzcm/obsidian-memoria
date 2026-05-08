@@ -241,9 +241,11 @@ export class MemoriaView extends ItemView {
 
   private getEffectiveDate(): Date {
     const now = new Date();
-    if (this.timeOverride === null) return now;
-    const [h, m] = this.timeOverride.split(":").map(n => parseInt(n, 10));
-    const d = new Date(now);
+    const baseDate = this.filter.date ? new Date(this.filter.date + "T00:00:00") : now;
+    if (this.timeOverride === null && !this.filter.date) return now;
+    const [h, m] = (this.timeOverride ?? `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`)
+      .split(":").map(n => parseInt(n, 10));
+    const d = new Date(baseDate);
     d.setHours(h, m, 0, 0);
     return d;
   }
@@ -253,8 +255,14 @@ export class MemoriaView extends ItemView {
     const d = this.getEffectiveDate();
     const hh = d.getHours().toString().padStart(2, "0");
     const mm = d.getMinutes().toString().padStart(2, "0");
-    this.timeChipEl.setText(`${hh}:${mm}`);
-    this.timeChipEl.toggleClass("is-overridden", this.timeOverride !== null);
+    const isDateOverridden = this.filter.date !== null;
+    if (isDateOverridden) {
+      const mmdd = `${d.getMonth() + 1}月${d.getDate()}日`;
+      this.timeChipEl.setText(`${mmdd} ${hh}:${mm}`);
+    } else {
+      this.timeChipEl.setText(`${hh}:${mm}`);
+    }
+    this.timeChipEl.toggleClass("is-overridden", this.timeOverride !== null || isDateOverridden);
   }
 
   private stopTimeTick() {
@@ -797,6 +805,7 @@ export class MemoriaView extends ItemView {
           this.filter.date = this.filter.date === date ? null : date;
           this.filter.preset = "all";
           this.pageLimit = this.getInitialPageLimit();
+          this.refreshTimeChip();
           this.renderAll();
         },
       });

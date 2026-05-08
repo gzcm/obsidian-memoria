@@ -1096,14 +1096,13 @@
   font-size: 11px;
   color: var(--text-muted);
   border-radius: 4px;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
 }
 .memoria-cal-cell.empty {
   cursor: default;
 }
 .memoria-cal-cell.has-memo {
-  cursor: pointer;
   color: var(--text-normal);
 }
 .memoria-cal-cell.has-memo:hover {

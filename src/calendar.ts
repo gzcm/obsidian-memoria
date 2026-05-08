@@ -64,9 +64,7 @@ export function renderCalendar(
         const dot = cell.createDiv({ cls: "memoria-cal-dot" });
         dot.addClass(`level-${count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4}`);
       }
-      if (count > 0 || dateStr === todayStr) {
-        cell.addEventListener("click", () => state.onPickDate(dateStr));
-      }
+      cell.addEventListener("click", () => state.onPickDate(dateStr));
     }
   };
 
