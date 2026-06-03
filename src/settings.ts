@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type MemoriaPlugin from "./main";
-import { t } from "./i18n";
+import { setLang, t } from "./i18n";
 
 export class MemoriaSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: MemoriaPlugin) {
@@ -181,7 +181,10 @@ export class MemoriaSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.language)
         .onChange(async v => {
           this.plugin.settings.language = v;
+          setLang(v);
           await this.plugin.saveSettings();
+          this.plugin.store.notifyChange();
+          this.display();
         }));
 
     containerEl.createEl("h3", { text: t("settings.heading.about") });

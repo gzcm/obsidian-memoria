@@ -4,6 +4,7 @@
  */
 import { App, normalizePath, Notice } from "obsidian";
 import { Memo } from "./types";
+import { ensureFolder } from "./vault";
 
 export type ExportFormat = "md" | "html" | "json";
 
@@ -34,12 +35,6 @@ export async function exportMemos(
   return filePath;
 }
 
-async function ensureFolder(app: App, path: string) {
-  if (!app.vault.getAbstractFileByPath(path)) {
-    await app.vault.createFolder(path);
-  }
-}
-
 function pad(n: number): string {
   return n.toString().padStart(2, "0");
 }
@@ -66,7 +61,7 @@ function buildMdExport(memos: Memo[], filterDesc: string): string {
     `exported_by: Memoria`,
     `exported_at: ${now.toISOString()}`,
     `count: ${memos.length}`,
-    `filter: ${filterDesc}`,
+    `filter: ${JSON.stringify(filterDesc)}`,
     "---", "",
     `# Memoria 导出 · ${filterDesc}`,
     "",
@@ -96,6 +91,7 @@ function buildMdExport(memos: Memo[], filterDesc: string): string {
 
 function buildHtmlExport(memos: Memo[], filterDesc: string): string {
   const now = new Date();
+  const safeFilterDesc = escapeHtml(filterDesc);
   const byDate = new Map<string, Memo[]>();
   for (const m of memos) {
     const arr = byDate.get(m.date) ?? [];
@@ -111,13 +107,13 @@ function buildHtmlExport(memos: Memo[], filterDesc: string): string {
     dayMemos.sort((a, b) => b.time.localeCompare(a.time));
     const wd = weekdays[new Date(date + "T00:00:00").getDay()];
     cardsHtml += `<div class="day-group">
-      <div class="day-head">${date} ${wd} · ${dayMemos.length} memos</div>`;
+      <div class="day-head">${escapeHtml(date)} ${escapeHtml(wd)} · ${dayMemos.length} memos</div>`;
     for (const m of dayMemos) {
       const tags = m.tags.filter(t => t !== "置顶" && t !== "收藏");
-      const tagsHtml = tags.map(t => `<span class="tag">#${t}</span>`).join("");
+      const tagsHtml = tags.map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
       const bodyHtml = renderInlineMd(m.content);
       cardsHtml += `<div class="card">
-        <div class="card-time">${m.time}</div>
+        <div class="card-time">${escapeHtml(m.time)}</div>
         <div class="card-body">${bodyHtml}</div>
         ${tagsHtml ? `<div class="card-tags">${tagsHtml}</div>` : ""}
       </div>`;
@@ -133,7 +129,7 @@ function buildHtmlExport(memos: Memo[], filterDesc: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Memoria Export - ${filterDesc}</title>
+<title>Memoria Export - ${safeFilterDesc}</title>
 <style>
 :root {
   --bg: #fbfaf7; --bg-card: #ffffff; --fg: #2c2a28; --fg-muted: #8a857f;
@@ -172,7 +168,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 <body>
 <div class="container">
   <div class="brand">Memoria</div>
-  <div class="subtitle">${filterDesc}</div>
+  <div class="subtitle">${safeFilterDesc}</div>
   <div class="stats">
     <span>${memos.length} memos</span>
     <span>${dayCount} days</span>
@@ -195,7 +191,9 @@ function renderInlineMd(text: string): string {
   // 行内代码
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   // 链接
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) =>
+    `<a href="${safeHref(href)}" rel="noopener noreferrer">${label}</a>`
+  );
   // 换行
   html = html.replace(/\n/g, "<br>");
   return html;
@@ -207,4 +205,22 @@ function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function safeHref(href: string): string {
+  const decoded = decodeHtmlEntities(href).trim();
+  if (!decoded) return "#";
+  const hasProtocol = /^[a-z][a-z0-9+.-]*:/i.test(decoded);
+  const allowedProtocol = /^(https?:|mailto:|obsidian:)/i.test(decoded);
+  if (hasProtocol && !allowedProtocol) return "#";
+  return escapeHtml(decoded);
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 }

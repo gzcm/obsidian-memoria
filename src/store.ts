@@ -1,6 +1,7 @@
 import { App, normalizePath, TFile } from "obsidian";
 import { Memo, MemoriaSettings, TAG_PINNED, TAG_STARRED } from "./types";
 import { parseMemos, formatDate, formatTime, getWeekday, buildMemoBlock } from "./parser";
+import { ensureFolder } from "./vault";
 
 interface ReloadLock {
   running: boolean;
@@ -125,7 +126,7 @@ export class MemoStore {
     const timeStr = formatTime(date);
     const weekday = getWeekday(date);
     const folder = normalizePath(this.settings.folder);
-    await this.ensureFolder(folder);
+    await ensureFolder(this.app, folder);
     const filePath = `${folder}/${year}.md`;
     const existing = this.app.vault.getAbstractFileByPath(filePath);
     if (existing) {
@@ -149,23 +150,36 @@ export class MemoStore {
     if (!file) return;
     const raw = await this.app.vault.read(file as TFile);
     const lines = raw.split(/\r?\n/);
-    let [start, end] = memo.range;
-    const timeLineRe = new RegExp(`^-\\s+${escapeRegex(memo.time)}(?:\\s|$)`);
-    // 安全检查: range 可能因文件变化失效
-    if (!(start >= 0 && start < lines.length && timeLineRe.test(lines[start]))) {
-      const reparsed = parseMemos(file.path, raw)
-        .filter(m => m.date === memo.date && m.time === memo.time && m.content === memo.content);
-      if (reparsed.length === 0) throw new Error("文件内容已变更，找不到原笔记位置，请关闭编辑后刷新重试");
-      reparsed.sort((a, b) => {
-        const da = Math.abs(a.range[0] - start), db = Math.abs(b.range[0] - start);
-        return da !== db ? da - db : a.range[0] - b.range[0];
-      });
-      [start, end] = reparsed[0].range;
-    }
+    const [start, end] = this.locateMemoRange(file.path, raw, memo);
     const newBlock = buildMemoBlock(memo.time, newContent).split("\n");
     lines.splice(start, end - start + 1, ...newBlock);
     await this.app.vault.modify(file as TFile, lines.join("\n"));
     await this.reloadFile(file as TFile);
+  }
+
+  private locateMemoRange(filePath: string, raw: string, memo: Memo): [number, number] {
+    const parsed = parseMemos(filePath, raw);
+    const sameRange = parsed.find(m =>
+      m.range[0] === memo.range[0] &&
+      m.range[1] === memo.range[1] &&
+      m.date === memo.date &&
+      m.time === memo.time &&
+      m.content === memo.content
+    );
+    if (sameRange) return sameRange.range;
+
+    const reparsed = parsed.filter(m =>
+      m.date === memo.date &&
+      m.time === memo.time &&
+      m.content === memo.content
+    );
+    if (reparsed.length === 0) throw new Error("文件内容已变更，找不到原笔记位置，请关闭编辑后刷新重试");
+    reparsed.sort((a, b) => {
+      const da = Math.abs(a.range[0] - memo.range[0]);
+      const db = Math.abs(b.range[0] - memo.range[0]);
+      return da !== db ? da - db : a.range[0] - b.range[0];
+    });
+    return reparsed[0].range;
   }
 
   /** v2.0.3: 编辑笔记内容 + 时间（可跨日/跨年） */
@@ -186,18 +200,7 @@ export class MemoStore {
     // 1. 从旧位置删除
     const raw = await this.app.vault.read(file as TFile);
     const lines = raw.split(/\r?\n/);
-    let [start, end] = memo.range;
-    const timeLineRe = new RegExp(`^-\\s+${escapeRegex(memo.time)}(?:\\s|$)`);
-    if (!(start >= 0 && start < lines.length && timeLineRe.test(lines[start]))) {
-      const reparsed = parseMemos(file.path, raw)
-        .filter(m => m.date === memo.date && m.time === memo.time && m.content === memo.content);
-      if (reparsed.length === 0) throw new Error("文件内容已变更，找不到原笔记位置，请关闭编辑后刷新重试");
-      reparsed.sort((a, b) => {
-        const da = Math.abs(a.range[0] - start), db = Math.abs(b.range[0] - start);
-        return da !== db ? da - db : a.range[0] - b.range[0];
-      });
-      [start, end] = reparsed[0].range;
-    }
+    const [start, end] = this.locateMemoRange(file.path, raw, memo);
     lines.splice(start, end - start + 1);
     this.removeOrphanDateHeaders(lines);
     // 清理多余空行
@@ -216,7 +219,7 @@ export class MemoStore {
 
     // 2. 插入到新位置
     const folder = normalizePath(this.settings.folder);
-    await this.ensureFolder(folder);
+    await ensureFolder(this.app, folder);
     const newPath = `${folder}/${year}.md`;
     if (newPath === file.path) {
       // 同年: 直接插入
@@ -246,13 +249,13 @@ export class MemoStore {
   async deleteMemo(memo: Memo) {
     const file = this.app.vault.getAbstractFileByPath(memo.file);
     if (!file) return;
+    const raw = await this.app.vault.read(file as TFile);
+    const lines = raw.split(/\r?\n/);
+    const [start, end] = this.locateMemoRange(file.path, raw, memo);
     if (this.settings.useTrash) {
       try { await this.appendToTrash(memo); }
       catch (e) { console.error("[Memoria] 写入回收站失败（将继续执行删除）:", e); }
     }
-    const raw = await this.app.vault.read(file as TFile);
-    const lines = raw.split(/\r?\n/);
-    const [start, end] = memo.range;
     lines.splice(start, end - start + 1);
     this.removeOrphanDateHeaders(lines);
     const cleaned: string[] = [];
@@ -288,7 +291,7 @@ export class MemoStore {
 
   private async appendToTrash(memo: Memo) {
     const folder = normalizePath(this.settings.folder);
-    await this.ensureFolder(folder);
+    await ensureFolder(this.app, folder);
     const trashPath = `${folder}/_trash.md`;
     const now = new Date();
     const timestamp = `${formatDate(now)} ${formatTime(now)}`;
@@ -347,7 +350,7 @@ export class MemoStore {
 
   async saveImageAttachment(data: ArrayBuffer, ext: string): Promise<string> {
     const folder = normalizePath(this.settings.attachmentFolder);
-    await this.ensureFolder(folder);
+    await ensureFolder(this.app, folder);
     const now = new Date();
     const ts = now.getFullYear().toString() +
       pad(now.getMonth() + 1) + pad(now.getDate()) + "-" +
@@ -357,12 +360,6 @@ export class MemoStore {
     const filePath = `${folder}/memoria-${ts}-${rand}.${cleanExt}`;
     await this.app.vault.createBinary(filePath, data);
     return filePath;
-  }
-
-  private async ensureFolder(path: string) {
-    if (!this.app.vault.getAbstractFileByPath(path)) {
-      await this.app.vault.createFolder(path);
-    }
   }
 
   private insertMemoIntoYear(

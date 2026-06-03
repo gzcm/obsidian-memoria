@@ -39,6 +39,7 @@ export class MemoriaView extends ItemView {
   private overviewMode: "heatmap" | "calendar" = "heatmap";
   private editingMemo: Memo | null = null;
   private timeOverride: string | null = null;
+  private timeOverrideBeforeEdit: string | null = null;
   private timeTickHandle: number | null = null;
 
   private sidebarEl!: HTMLElement;
@@ -294,10 +295,12 @@ export class MemoriaView extends ItemView {
 
   private getEffectiveDate(): Date {
     const now = new Date();
-    const baseDate = this.filter.date ? new Date(this.filter.date + "T00:00:00") : now;
-    if (this.timeOverride === null && !this.filter.date) return now;
-    const [h, m] = (this.timeOverride ?? `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`)
-      .split(":").map(n => parseInt(n, 10));
+    const baseDateText = this.editingMemo?.date ?? this.filter.date;
+    const baseDate = baseDateText ? new Date(baseDateText + "T00:00:00") : now;
+    if (this.timeOverride === null && !baseDateText) return now;
+    const fallbackTime = this.editingMemo?.time ??
+      `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
+    const [h, m] = (this.timeOverride ?? fallbackTime).split(":").map(n => parseInt(n, 10));
     const d = new Date(baseDate);
     d.setHours(h, m, 0, 0);
     return d;
@@ -308,7 +311,7 @@ export class MemoriaView extends ItemView {
     const d = this.getEffectiveDate();
     const hh = d.getHours().toString().padStart(2, "0");
     const mm = d.getMinutes().toString().padStart(2, "0");
-    const isDateOverridden = this.filter.date !== null;
+    const isDateOverridden = this.editingMemo !== null || this.filter.date !== null;
     if (isDateOverridden) {
       const mmdd = `${d.getMonth() + 1}月${d.getDate()}日`;
       this.timeChipEl.setText(`${mmdd} ${hh}:${mm}`);
@@ -334,6 +337,9 @@ export class MemoriaView extends ItemView {
     let m: number;
     if (this.timeOverride !== null) {
       const [oh, om] = this.timeOverride.split(":").map(n => parseInt(n, 10));
+      h = oh; m = om;
+    } else if (this.editingMemo) {
+      const [oh, om] = this.editingMemo.time.split(":").map(n => parseInt(n, 10));
       h = oh; m = om;
     } else {
       h = now.getHours();
@@ -668,8 +674,14 @@ export class MemoriaView extends ItemView {
     if (!text) return;
     try {
       if (this.editingMemo) {
-        await this.store.editMemo(this.editingMemo, text);
-        new Notice("✓ 已更新");
+        const effectiveDate = this.getEffectiveDate();
+        if (toDateStr(effectiveDate) === this.editingMemo.date && toTimeStr(effectiveDate) === this.editingMemo.time) {
+          await this.store.editMemo(this.editingMemo, text);
+          new Notice(t("notice.updated"));
+        } else {
+          await this.store.editMemoDateTime(this.editingMemo, effectiveDate, text);
+          new Notice(t("notice.updatedWithTime"));
+        }
         this.exitEditMode();
       } else {
         // v2.0.3: 按标签筛选时自动加标签
@@ -701,7 +713,9 @@ export class MemoriaView extends ItemView {
 
   enterEditMode(memo: Memo) {
     if (this.inputEl.value.trim() && !this.editingMemo) this.saveDraft(this.inputEl.value);
+    if (!this.editingMemo) this.timeOverrideBeforeEdit = this.timeOverride;
     this.editingMemo = memo;
+    this.timeOverride = memo.time;
     this.inputEl.value = memo.content;
     this.inputEl.focus();
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
@@ -711,6 +725,8 @@ export class MemoriaView extends ItemView {
 
   private exitEditMode() {
     this.editingMemo = null;
+    this.timeOverride = this.timeOverrideBeforeEdit;
+    this.timeOverrideBeforeEdit = null;
     this.inputEl.value = this.loadDraft();
     this.updateEditBanner();
     this.autoResizeInput();
@@ -723,7 +739,8 @@ export class MemoriaView extends ItemView {
       this.editBannerEl.removeClass("memoria-hidden");
       card?.addClass("is-editing");
       this.inputEl.setAttr("placeholder", `编辑 ${this.editingMemo.date} ${this.editingMemo.time} 的笔记（Esc 取消）`);
-      this.timeChipEl?.addClass("memoria-hidden");
+      this.timeChipEl?.removeClass("memoria-hidden");
+      this.refreshTimeChip();
     } else {
       this.editBannerEl.addClass("memoria-hidden");
       card?.removeClass("is-editing");
@@ -1426,6 +1443,12 @@ function toDateStr(date: Date): string {
   const m = (date.getMonth() + 1).toString().padStart(2, "0");
   const d = date.getDate().toString().padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function toTimeStr(date: Date): string {
+  const h = date.getHours().toString().padStart(2, "0");
+  const m = date.getMinutes().toString().padStart(2, "0");
+  return `${h}:${m}`;
 }
 
 /** 有种子洗牌：用线性同余生成器（LCG）保证同一 seed 输出相同顺序，便于「换一批」交互 */
