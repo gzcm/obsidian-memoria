@@ -8,7 +8,7 @@ import { MemoStore } from "./store";
 import { t } from "./i18n";
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
+const WEEKDAY_KEYS = ["calendar.wd.0", "calendar.wd.1", "calendar.wd.2", "calendar.wd.3", "calendar.wd.4", "calendar.wd.5", "calendar.wd.6"];
 
 export class MemoriaYearView extends ItemView {
   private store: MemoStore;
@@ -23,7 +23,7 @@ export class MemoriaYearView extends ItemView {
   }
 
   getViewType() { return VIEW_TYPE_YEAR; }
-  getDisplayText() { return "Memoria 年度全景"; }
+  getDisplayText() { return t("year.viewTitle"); }
   getIcon() { return "calendar-days"; }
 
   async onOpen() {
@@ -47,10 +47,10 @@ export class MemoriaYearView extends ItemView {
     header.createDiv({ cls: "memoria-year-title", text: String(this.year) });
 
     const nav = header.createDiv({ cls: "memoria-year-nav" });
-    const prevBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": "上一年" } });
+    const prevBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": t("year.prevYear") } });
     setIcon(prevBtn, "chevron-left");
-    const todayBtn = nav.createEl("button", { cls: "memoria-year-today-btn", text: "今年" });
-    const nextBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": "下一年" } });
+    const todayBtn = nav.createEl("button", { cls: "memoria-year-today-btn", text: t("year.today") });
+    const nextBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": t("year.nextYear") } });
     setIcon(nextBtn, "chevron-right");
 
     prevBtn.addEventListener("click", () => { this.year--; this.render(); });
@@ -77,7 +77,7 @@ export class MemoriaYearView extends ItemView {
 
       // 星期头
       const weekHead = monthEl.createDiv({ cls: "memoria-year-weekhead" });
-      for (const wd of WEEKDAY_LABELS) weekHead.createDiv({ cls: "memoria-year-wday", text: wd });
+      for (let w = 0; w < WEEKDAY_KEYS.length; w++) weekHead.createDiv({ cls: "memoria-year-wday", text: t(WEEKDAY_KEYS[w]) });
 
       // 日期网格
       const daysGrid = monthEl.createDiv({ cls: "memoria-year-grid-days" });
@@ -106,7 +106,7 @@ export class MemoriaYearView extends ItemView {
         daysGrid.createDiv({
           cls,
           text: String(d),
-          attr: { title: count > 0 ? `${dateStr}  ${count} 条` : dateStr },
+          attr: { title: count > 0 ? t("stats.dayCount", { date: dateStr, count }) : dateStr },
         });
       }
 
@@ -126,9 +126,9 @@ export class MemoriaYearView extends ItemView {
     const activeDays = new Set(this.memos.map(m => m.date)).size;
     const yearMemos = this.memos.filter(m => m.date.startsWith(String(this.year)));
     const foot = el.createDiv({ cls: "memoria-year-foot" });
-    foot.createSpan({ cls: "memoria-year-foot-item", text: `${yearMemos.length} 条笔记` });
+    foot.createSpan({ cls: "memoria-year-foot-item", text: t("year.memos", { n: yearMemos.length }) });
     foot.createSpan({ cls: "memoria-year-foot-sep", text: "·" });
-    foot.createSpan({ cls: "memoria-year-foot-item", text: `${activeDays} 活跃天` });
+    foot.createSpan({ cls: "memoria-year-foot-item", text: t("year.activeDays", { n: activeDays }) });
   }
 }
 

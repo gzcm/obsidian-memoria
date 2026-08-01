@@ -1,4 +1,5 @@
 import { Memo, TAG_PINNED, TAG_STARRED } from "./types";
+import { extractTagsFromContent } from "./tag-rewrite";
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 const DATE_HEAD_RE = /^##\s+(\d{4}-\d{2}-\d{2})(?:\s+.+)?$/;
@@ -77,18 +78,14 @@ export function parseMemos(filePath: string, content: string): Memo[] {
   return memos;
 }
 
-function buildDatetime(dateStr: string, timeStr: string): Date {
+export function buildDatetime(dateStr: string, timeStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(n => parseInt(n, 10));
   const [h, min] = timeStr.split(":").map(n => parseInt(n, 10));
   return new Date(y, m - 1, d, h, min, 0, 0);
 }
 
 export function extractTags(content: string): string[] {
-  const re = /#([A-Za-z0-9_一-鿿][A-Za-z0-9_一-鿿/]*)/g;
-  const tags = new Set<string>();
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) tags.add(m[1]);
-  return [...tags];
+  return extractTagsFromContent(content);
 }
 
 function checkHasImage(content: string): boolean {

@@ -22,7 +22,7 @@ __export(main_exports, {
   default: () => MemoriaPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian11 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 
 // src/types.ts
 var DEFAULT_SETTINGS = {
@@ -40,17 +40,155 @@ var DEFAULT_SETTINGS = {
   enableVimKeys: false,
   enableMoodColoring: false,
   enableSmartReview: true,
-  language: "auto"
+  language: "auto",
+  savedFilters: [],
+  promoteFolder: "Memoria/notes"
 };
 var VIEW_TYPE_MEMORIA = "memoria-view";
 var VIEW_TYPE_STATS = "memoria-stats-view";
 var VIEW_TYPE_YEAR = "memoria-year-view";
+var VIEW_TYPE_TRASH = "memoria-trash-view";
+var VIEW_TYPE_TAG_TOOLS = "memoria-tag-tools-view";
 var TAG_PINNED = "\u7F6E\u9876";
 var TAG_STARRED = "\u6536\u85CF";
 var RESERVED_TAGS = /* @__PURE__ */ new Set([TAG_PINNED, TAG_STARRED]);
 
 // src/store.ts
 var import_obsidian2 = require("obsidian");
+
+// src/tag-rewrite.ts
+var TAG_RE = /#([A-Za-z0-9_一-鿿][A-Za-z0-9_一-鿿/]*)/g;
+function extractTagsFromContent(content) {
+  const tags = /* @__PURE__ */ new Set();
+  visitEditableLines(content, (line) => {
+    const protectedRanges = getProtectedRanges(line);
+    TAG_RE.lastIndex = 0;
+    let match;
+    while ((match = TAG_RE.exec(line)) !== null) {
+      if (!isProtected(match.index, protectedRanges)) tags.add(match[1]);
+    }
+    return line;
+  });
+  return [...tags];
+}
+function replaceTagInContent(content, oldTag, newTag) {
+  const next = visitEditableLines(content, (line) => replaceTagsInLine(line, oldTag, newTag));
+  if (newTag !== null) return next;
+  return compactLines(next) || "\uFF08\u6807\u7B7E\u5DF2\u79FB\u9664\uFF09";
+}
+function stripDisplayTags(content) {
+  const tags = [];
+  let changed = false;
+  const text = visitEditableLines(content, (line) => {
+    const protectedRanges = getProtectedRanges(line);
+    TAG_RE.lastIndex = 0;
+    return line.replace(TAG_RE, (match, tag, offset) => {
+      if (isProtected(offset, protectedRanges)) return match;
+      if (!tags.includes(tag)) tags.push(tag);
+      changed = true;
+      return "";
+    });
+  });
+  if (!changed) return { text: content, tags };
+  return { text: compactLines(text), tags };
+}
+function visitEditableLines(content, transform) {
+  const lines = content.split("\n");
+  let inFence = false;
+  return lines.map((line) => {
+    if (isFenceLine(line)) {
+      inFence = !inFence;
+      return line;
+    }
+    if (inFence) return line;
+    return transform(line);
+  }).join("\n");
+}
+function replaceTagsInLine(line, oldTag, newTag) {
+  const protectedRanges = getProtectedRanges(line);
+  TAG_RE.lastIndex = 0;
+  return line.replace(TAG_RE, (match, tag, offset) => {
+    if (isProtected(offset, protectedRanges)) return match;
+    if (tag === oldTag) return newTag ? `#${newTag}` : "";
+    if (tag.startsWith(oldTag + "/")) return newTag ? `#${newTag}${tag.slice(oldTag.length)}` : "";
+    return match;
+  });
+}
+function getProtectedRanges(line) {
+  const ranges = [];
+  addInlineCodeRanges(line, ranges);
+  addWikiLinkRanges(line, ranges);
+  addMarkdownDestinationRanges(line, ranges);
+  addBareUrlRanges(line, ranges);
+  return mergeRanges(ranges);
+}
+function addInlineCodeRanges(line, ranges) {
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < line.length && line[i] === "`") i++;
+    const ticks = line.slice(start, i);
+    const end = line.indexOf(ticks, i);
+    if (end < 0) break;
+    ranges.push([start, end + ticks.length]);
+    i = end + ticks.length;
+  }
+}
+function addWikiLinkRanges(line, ranges) {
+  let start = line.indexOf("[[");
+  while (start >= 0) {
+    const end = line.indexOf("]]", start + 2);
+    if (end < 0) break;
+    ranges.push([start, end + 2]);
+    start = line.indexOf("[[", end + 2);
+  }
+}
+function addMarkdownDestinationRanges(line, ranges) {
+  let start = line.indexOf("](");
+  while (start >= 0) {
+    let depth = 1;
+    let i = start + 2;
+    while (i < line.length && depth > 0) {
+      if (line[i] === "\\") {
+        i += 2;
+        continue;
+      }
+      if (line[i] === "(") depth++;
+      else if (line[i] === ")") depth--;
+      i++;
+    }
+    if (depth === 0) ranges.push([start + 2, i - 1]);
+    start = line.indexOf("](", i);
+  }
+}
+function addBareUrlRanges(line, ranges) {
+  const urlRe = /\b(?:https?|file|obsidian):\/\/[^\s<>()]+/gi;
+  let match;
+  while ((match = urlRe.exec(line)) !== null) ranges.push([match.index, match.index + match[0].length]);
+}
+function mergeRanges(ranges) {
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (!last || range[0] > last[1]) merged.push([...range]);
+    else last[1] = Math.max(last[1], range[1]);
+  }
+  return merged;
+}
+function isProtected(index, ranges) {
+  return ranges.some(([start, end]) => index >= start && index < end);
+}
+function isFenceLine(line) {
+  return /^\s*(?:```|~~~)/.test(line);
+}
+function compactLines(text) {
+  return text.split("\n").map((l) => l.replace(/[ \t]+$/g, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 // src/parser.ts
 var WEEKDAYS = ["\u5468\u65E5", "\u5468\u4E00", "\u5468\u4E8C", "\u5468\u4E09", "\u5468\u56DB", "\u5468\u4E94", "\u5468\u516D"];
@@ -129,11 +267,7 @@ function buildDatetime(dateStr, timeStr) {
   return new Date(y, m - 1, d, h, min, 0, 0);
 }
 function extractTags(content) {
-  const re = /#([A-Za-z0-9_一-鿿][A-Za-z0-9_一-鿿/]*)/g;
-  const tags = /* @__PURE__ */ new Set();
-  let m;
-  while ((m = re.exec(content)) !== null) tags.add(m[1]);
-  return [...tags];
+  return extractTagsFromContent(content);
 }
 function checkHasImage(content) {
   return !!(/!\[[^\]]*\]\([^)]+\)/.test(content) || /!\[\[[^\]]+\.(png|jpe?g|gif|webp|svg|bmp|avif)(\|[^\]]*)?\]\]/i.test(content));
@@ -535,18 +669,7 @@ ${buildMemoBlock(timeStr, content)}
     const [start, end] = this.locateMemoRange(file.path, raw, memo);
     lines.splice(start, end - start + 1);
     this.removeOrphanDateHeaders(lines);
-    const cleaned = [];
-    let blanks = 0;
-    for (const line of lines) {
-      if (line.trim() === "") {
-        blanks++;
-        if (blanks <= 2) cleaned.push(line);
-      } else {
-        blanks = 0;
-        cleaned.push(line);
-      }
-    }
-    await this.app.vault.modify(file, cleaned.join("\n"));
+    await this.app.vault.modify(file, this.compactBlankLines(lines).join("\n"));
     const folder = (0, import_obsidian2.normalizePath)(this.settings.folder);
     await ensureFolder(this.app, folder);
     const newPath = `${folder}/${year}.md`;
@@ -593,18 +716,7 @@ ${buildMemoBlock(timeStr, content)}
     }
     lines.splice(start, end - start + 1);
     this.removeOrphanDateHeaders(lines);
-    const cleaned = [];
-    let blanks = 0;
-    for (const line of lines) {
-      if (line.trim() === "") {
-        blanks++;
-        if (blanks <= 2) cleaned.push(line);
-      } else {
-        blanks = 0;
-        cleaned.push(line);
-      }
-    }
-    await this.app.vault.modify(file, cleaned.join("\n"));
+    await this.app.vault.modify(file, this.compactBlankLines(lines).join("\n"));
     await this.reloadFile(file);
   }
   removeOrphanDateHeaders(lines) {
@@ -628,7 +740,7 @@ ${buildMemoBlock(timeStr, content)}
   async appendToTrash(memo) {
     const folder = (0, import_obsidian2.normalizePath)(this.settings.folder);
     await ensureFolder(this.app, folder);
-    const trashPath = `${folder}/_trash.md`;
+    const trashPath = this.getTrashFilePath();
     const now = /* @__PURE__ */ new Date();
     const timestamp = `${formatDate(now)} ${formatTime(now)}`;
     const indented = memo.content.split("\n").map((l) => l === "" ? "" : `  ${l}`).join("\n");
@@ -650,6 +762,107 @@ ${indented}
       raw = this.trimTrashToLimit(raw, this.settings.trashMaxItems);
       await this.app.vault.modify(existing, raw);
     }
+  }
+  getTrashFilePath() {
+    const folder = (0, import_obsidian2.normalizePath)(this.settings.folder);
+    return `${folder}/_trash.md`;
+  }
+  /** 2026-06-03: 回收站 UI 入口统一走这里，避免视图层手动解析 _trash.md 导致恢复定位出错 */
+  async getTrashItems() {
+    const file = this.app.vault.getAbstractFileByPath(this.getTrashFilePath());
+    if (!(file instanceof import_obsidian2.TFile)) return [];
+    const raw = await this.app.vault.read(file);
+    return this.parseTrashItems(raw);
+  }
+  /** 2026-06-03: 恢复先插回年份文件，再移除回收站条目；顺序反过来会增加误删风险 */
+  async restoreTrashItem(id) {
+    const item = await this.findTrashItem(id);
+    const date = buildDatetime(item.originalDate, item.originalTime);
+    await this.addMemo(item.content, date);
+    await this.removeTrashItem(id);
+    return item;
+  }
+  /** 2026-06-03: 清空回收站保留文件说明，方便用户知道这个文件仍是 Memoria 的安全兜底 */
+  async clearTrash() {
+    const folder = (0, import_obsidian2.normalizePath)(this.settings.folder);
+    await ensureFolder(this.app, folder);
+    const trashPath = this.getTrashFilePath();
+    const header = "# Memoria \u56DE\u6536\u7AD9\n\n> \u8FD9\u91CC\u4FDD\u5B58\u88AB\u5220\u9664\u7684\u7B14\u8BB0\u3002\u505C\u7528\u63D2\u4EF6\u540E\u4F9D\u7136\u53EF\u8BFB\uFF0C\u53EF\u624B\u52A8\u6062\u590D\u6216\u6E05\u7A7A\u3002\n> \u8BE5\u6587\u4EF6\u4E0D\u4F1A\u88AB Memoria \u4E3B\u89C6\u56FE\u8BC6\u522B\u4E3A\u666E\u901A\u7B14\u8BB0\u3002\n";
+    const existing = this.app.vault.getAbstractFileByPath(trashPath);
+    if (existing instanceof import_obsidian2.TFile) await this.app.vault.modify(existing, header);
+    else await this.app.vault.create(trashPath, header);
+  }
+  async findTrashItem(id) {
+    const items = await this.getTrashItems();
+    const item = items.find((x) => x.id === id);
+    if (!item) throw new Error("\u56DE\u6536\u7AD9\u6761\u76EE\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5");
+    return item;
+  }
+  async removeTrashItem(id) {
+    const file = this.app.vault.getAbstractFileByPath(this.getTrashFilePath());
+    if (!(file instanceof import_obsidian2.TFile)) throw new Error("\u627E\u4E0D\u5230\u56DE\u6536\u7AD9\u6587\u4EF6");
+    const raw = await this.app.vault.read(file);
+    const items = this.parseTrashItems(raw);
+    const item = items.find((x) => x.id === id);
+    if (!item) throw new Error("\u56DE\u6536\u7AD9\u6761\u76EE\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5");
+    const lines = raw.split(/\r?\n/);
+    lines.splice(item.range[0], item.range[1] - item.range[0] + 1);
+    await this.app.vault.modify(file, this.compactBlankLines(lines).join("\n"));
+    return item;
+  }
+  parseTrashItems(raw) {
+    var _a, _b, _c;
+    const lines = raw.split(/\r?\n/);
+    const items = [];
+    const headRe = /^##\s+已删除\s+(.+)$/;
+    const metaRe = /^-\s+来源：`([^`]+)`\s+·\s+原时间\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/;
+    for (let i = 0; i < lines.length; i++) {
+      const head = lines[i].match(headRe);
+      if (!head) continue;
+      const metaOffset = findMetaOffset((_a = lines[i + 1]) != null ? _a : "", (_b = lines[i + 2]) != null ? _b : "");
+      if (metaOffset < 0) continue;
+      const metaLine = (_c = lines[i + metaOffset]) != null ? _c : "";
+      const meta = metaLine.match(metaRe);
+      if (!meta) continue;
+      let end = lines.length - 1;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (headRe.test(lines[j])) {
+          end = j - 1;
+          break;
+        }
+      }
+      const contentStart = i + metaOffset + 1;
+      const contentLines = lines.slice(contentStart, end + 1).map((l) => l.startsWith("  ") ? l.slice(2) : l);
+      while (contentLines.length && contentLines[0].trim() === "") contentLines.shift();
+      while (contentLines.length && contentLines[contentLines.length - 1].trim() === "") contentLines.pop();
+      const content = contentLines.join("\n");
+      const id = `${head[1]}|${meta[1]}|${meta[2]}|${meta[3]}|${i}|${hashString(content)}`;
+      items.push({
+        id,
+        deletedAt: head[1],
+        sourceFile: meta[1],
+        originalDate: meta[2],
+        originalTime: meta[3],
+        content,
+        range: [i, end]
+      });
+    }
+    return items.reverse();
+  }
+  compactBlankLines(lines) {
+    const cleaned = [];
+    let blanks = 0;
+    for (const line of lines) {
+      if (line.trim() === "") {
+        blanks++;
+        if (blanks <= 2) cleaned.push(line);
+      } else {
+        blanks = 0;
+        cleaned.push(line);
+      }
+    }
+    while (cleaned.length > 1 && cleaned[cleaned.length - 1].trim() === "" && cleaned[cleaned.length - 2].trim() === "") cleaned.pop();
+    return cleaned;
   }
   /** v2.0.3: 回收站上限裁剪 */
   trimTrashToLimit(raw, limit) {
@@ -698,6 +911,103 @@ ${indented}
     const filePath = `${folder}/memoria-${ts}-${rand}.${cleanExt}`;
     await this.app.vault.createBinary(filePath, data);
     return filePath;
+  }
+  getTagStats() {
+    var _a;
+    const counts = /* @__PURE__ */ new Map();
+    for (const memo of this.memos) {
+      const seen = /* @__PURE__ */ new Set();
+      for (const tag of memo.tags) {
+        if (RESERVED_TAGS.has(tag) || seen.has(tag)) continue;
+        counts.set(tag, ((_a = counts.get(tag)) != null ? _a : 0) + 1);
+        seen.add(tag);
+      }
+    }
+    return [...counts.entries()].map(([name, memoCount]) => ({ name, memoCount })).sort((a, b) => b.memoCount - a.memoCount || a.name.localeCompare(b.name));
+  }
+  async renameTag(oldTag, newTag) {
+    const from = normalizeTagName(oldTag);
+    const to = normalizeTagName(newTag);
+    if (!from || !to) throw new Error("\u6807\u7B7E\u4E0D\u80FD\u4E3A\u7A7A");
+    if (RESERVED_TAGS.has(from) || RESERVED_TAGS.has(to)) throw new Error("\u7F6E\u9876\u3001\u6536\u85CF\u662F\u4FDD\u7559\u6807\u7B7E\uFF0C\u4E0D\u80FD\u5728\u6807\u7B7E\u6574\u7406\u5DE5\u5177\u4E2D\u6539\u540D");
+    if (from === to) return 0;
+    return await this.rewriteTagsAcrossMemos((content) => replaceTagInContent(content, from, to));
+  }
+  async removeTag(tag) {
+    const target = normalizeTagName(tag);
+    if (!target) throw new Error("\u6807\u7B7E\u4E0D\u80FD\u4E3A\u7A7A");
+    if (RESERVED_TAGS.has(target)) throw new Error("\u7F6E\u9876\u3001\u6536\u85CF\u662F\u4FDD\u7559\u6807\u7B7E\uFF0C\u4E0D\u80FD\u5728\u6807\u7B7E\u6574\u7406\u5DE5\u5177\u4E2D\u5220\u9664");
+    return await this.rewriteTagsAcrossMemos((content) => replaceTagInContent(content, target, null));
+  }
+  /** 2026-06-03: 标签整理批量改写只替换 memo 内容块，避免误改年份标题、回收站和导出文件 */
+  async rewriteTagsAcrossMemos(transform) {
+    const files = this.collectFiles();
+    let changedMemos = 0;
+    for (const file of files) {
+      const raw = await this.app.vault.read(file);
+      const memos = parseMemos(file.path, raw).sort((a, b) => b.range[0] - a.range[0]);
+      if (!memos.length) continue;
+      const lines = raw.split(/\r?\n/);
+      let changedFile = false;
+      for (const memo of memos) {
+        const nextContent = transform(memo.content);
+        if (nextContent === memo.content) continue;
+        const nextTags = extractTags(nextContent);
+        if (nextTags.join("\0") === memo.tags.join("\0")) continue;
+        const block = buildMemoBlock(memo.time, nextContent).split("\n");
+        lines.splice(memo.range[0], memo.range[1] - memo.range[0] + 1, ...block);
+        changedFile = true;
+        changedMemos++;
+      }
+      if (changedFile) {
+        await this.app.vault.modify(file, lines.join("\n"));
+        await this.reloadFile(file);
+      }
+    }
+    return changedMemos;
+  }
+  /** 2026-06-03: memo 转正式笔记保留来源字段，便于后续排查跨文件生成或重复创建问题 */
+  async promoteMemoToNote(memo, title, folder) {
+    const targetFolder = (0, import_obsidian2.normalizePath)(folder.trim() || this.settings.promoteFolder || "Memoria/notes");
+    await ensureFolder(this.app, targetFolder);
+    const safeTitle = sanitizeFileName(title.trim() || memo.content.split("\n")[0] || "Memoria memo");
+    const baseName = `${memo.date}-${memo.time.replace(":", "")}-${safeTitle}`.slice(0, 100);
+    const filePath = await this.getUniqueMarkdownPath(targetFolder, baseName);
+    const content = this.buildPromotedNoteContent(memo, title.trim() || safeTitle);
+    await this.app.vault.create(filePath, content);
+    return filePath;
+  }
+  async getUniqueMarkdownPath(folder, baseName) {
+    let filePath = `${folder}/${baseName}.md`;
+    let idx = 2;
+    while (this.app.vault.getAbstractFileByPath(filePath)) {
+      filePath = `${folder}/${baseName}-${idx}.md`;
+      idx++;
+    }
+    return filePath;
+  }
+  buildPromotedNoteContent(memo, title) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const sourceFile = memo.file.replace(/\\/g, "/");
+    const body = memo.content.trim();
+    return [
+      "---",
+      "source: Memoria",
+      `promoted_at: ${now}`,
+      `memo_date: ${memo.date}`,
+      `memo_time: ${memo.time}`,
+      `memo_file: ${JSON.stringify(sourceFile)}`,
+      "---",
+      "",
+      `# ${title}`,
+      "",
+      `> \u6765\u6E90\uFF1AMemoria \xB7 ${memo.date} ${memo.time}`,
+      "",
+      "## \u539F\u6587",
+      "",
+      body,
+      ""
+    ].join("\n");
   }
   insertMemoIntoYear(raw, year, dateStr, weekday, time, content) {
     const lines = raw.split(/\r?\n/);
@@ -781,8 +1091,33 @@ ${indented}
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+function findMetaOffset(line1, line2) {
+  const metaRe = /^-\s+来源：`([^`]+)`\s+·\s+原时间\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/;
+  if (metaRe.test(line1)) return 1;
+  if (metaRe.test(line2)) return 2;
+  return -1;
+}
 function pad(n) {
   return n.toString().padStart(2, "0");
+}
+function sanitizeFileName(name) {
+  return name.replace(/[\\/:*?"<>|#^[\]]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) || "Memoria memo";
+}
+function hashString(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+function normalizeTagName(tag) {
+  const normalized = tag.trim().replace(/^#/, "").replace(/\/+$/, "");
+  if (!normalized) return "";
+  if (!/^[A-Za-z0-9_一-鿿][A-Za-z0-9_一-鿿/]*$/.test(normalized)) {
+    throw new Error("\u6807\u7B7E\u53EA\u80FD\u5305\u542B\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u4E0B\u5212\u7EBF\u3001\u4E2D\u6587\u548C /");
+  }
+  return normalized;
 }
 
 // src/view.ts
@@ -975,203 +1310,6 @@ var TagSuggest = _TagSuggest;
 
 // src/image.ts
 var import_obsidian4 = require("obsidian");
-var WIKILINK_IMG_RE = /!\[\[([^\]]+?)(?:\|([^\]]*))?\]\]/g;
-var MD_IMG_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
-function isImageExt(ext) {
-  return /^(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(ext);
-}
-function extractImages(app, content, filePath) {
-  const images = [];
-  let text = content.replace(WIKILINK_IMG_RE, (match, path, alt) => {
-    var _a;
-    const name = path.trim();
-    const ext = ((_a = name.split(".").pop()) != null ? _a : "").toLowerCase();
-    if (!isImageExt(ext)) return match;
-    const file = app.metadataCache.getFirstLinkpathDest(name, filePath);
-    if (!(file instanceof import_obsidian4.TFile)) return match;
-    images.push({ vaultPath: file.path, src: app.vault.getResourcePath(file), alt: alt != null ? alt : file.basename });
-    return "";
-  });
-  text = text.replace(MD_IMG_RE, (match, alt, src) => {
-    var _a;
-    const url = src.trim();
-    const ext = (_a = url.split(/[?#]/)[0].split(".").pop()) != null ? _a : "";
-    if (!isImageExt(ext) && !url.startsWith("data:image/")) return match;
-    let resolvedSrc = url;
-    if (!url.startsWith("http") && !url.startsWith("data:")) {
-      const file = app.metadataCache.getFirstLinkpathDest(url, filePath);
-      if (file instanceof import_obsidian4.TFile) resolvedSrc = app.vault.getResourcePath(file);
-    }
-    images.push({ src: resolvedSrc, alt: alt || "image" });
-    return "";
-  });
-  text = text.split("\n").map((l) => l.replace(/\s+$/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return { text, images };
-}
-function renderImageGrid(container, images, onClickImage) {
-  if (images.length === 0) return;
-  const grid = container.createDiv({
-    cls: `memoria-img-grid memoria-img-grid-${Math.min(images.length, 9)}`
-  });
-  images.slice(0, 9).forEach((img, i) => {
-    const cell = grid.createDiv({ cls: "memoria-img-cell" });
-    cell.createEl("img", {
-      cls: "memoria-img",
-      attr: { src: img.src, alt: img.alt, loading: "lazy" }
-    }).addEventListener("click", (e) => {
-      e.stopPropagation();
-      onClickImage(i);
-    });
-    if (i === 8 && images.length > 9) {
-      const overlay = cell.createDiv({ cls: "memoria-img-overlay" });
-      overlay.setText(`+${images.length - 9}`);
-      overlay.addEventListener("click", (e) => {
-        e.stopPropagation();
-        onClickImage(8);
-      });
-    }
-  });
-}
-function showLightbox(images, initialIndex) {
-  let current = initialIndex;
-  const backdrop = document.body.createDiv({ cls: "memoria-lightbox" });
-  const stage = backdrop.createDiv({ cls: "memoria-lightbox-stage" });
-  const img = stage.createEl("img", { cls: "memoria-lightbox-img" });
-  const counter = backdrop.createDiv({ cls: "memoria-lightbox-counter" });
-  const closeBtn = backdrop.createEl("button", {
-    cls: "memoria-lightbox-close",
-    text: "\xD7",
-    attr: { "aria-label": "\u5173\u95ED" }
-  });
-  const prevBtn = backdrop.createEl("button", {
-    cls: "memoria-lightbox-nav memoria-lightbox-prev",
-    text: "\u2039",
-    attr: { "aria-label": "\u4E0A\u4E00\u5F20" }
-  });
-  const nextBtn = backdrop.createEl("button", {
-    cls: "memoria-lightbox-nav memoria-lightbox-next",
-    text: "\u203A",
-    attr: { "aria-label": "\u4E0B\u4E00\u5F20" }
-  });
-  const update = () => {
-    img.src = images[current].src;
-    img.alt = images[current].alt;
-    counter.setText(`${current + 1} / ${images.length}`);
-    prevBtn.style.visibility = current > 0 ? "visible" : "hidden";
-    nextBtn.style.visibility = current < images.length - 1 ? "visible" : "hidden";
-  };
-  update();
-  const close = () => {
-    backdrop.remove();
-    document.removeEventListener("keydown", onKey);
-  };
-  const prev = () => {
-    if (current > 0) {
-      current--;
-      update();
-    }
-  };
-  const next = () => {
-    if (current < images.length - 1) {
-      current++;
-      update();
-    }
-  };
-  closeBtn.addEventListener("click", close);
-  prevBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    prev();
-  });
-  nextBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    next();
-  });
-  backdrop.addEventListener("click", (e) => {
-    (e.target === backdrop || e.target === stage) && close();
-  });
-  img.addEventListener("click", (e) => {
-    e.stopPropagation();
-    next();
-  });
-  const onKey = (e) => {
-    if (e.key === "Escape") close();
-    else if (e.key === "ArrowLeft") prev();
-    else if (e.key === "ArrowRight") next();
-  };
-  document.addEventListener("keydown", onKey);
-}
-
-// src/calendar.ts
-var import_obsidian5 = require("obsidian");
-var WEEKDAY_CHARS = ["\u65E5", "\u4E00", "\u4E8C", "\u4E09", "\u56DB", "\u4E94", "\u516D"];
-function renderCalendar(container, memos, state, initialYear, initialMonth) {
-  var _a;
-  const today = /* @__PURE__ */ new Date();
-  let year = initialYear != null ? initialYear : today.getFullYear();
-  let month = initialMonth != null ? initialMonth : today.getMonth();
-  const el = container.createDiv({ cls: "memoria-calendar" });
-  const dateCounts = /* @__PURE__ */ new Map();
-  for (const m of memos) dateCounts.set(m.date, ((_a = dateCounts.get(m.date)) != null ? _a : 0) + 1);
-  const render = () => {
-    var _a2;
-    el.empty();
-    const head = el.createDiv({ cls: "memoria-cal-head" });
-    const prevBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": "\u4E0A\u4E2A\u6708" } });
-    (0, import_obsidian5.setIcon)(prevBtn, "chevron-left");
-    head.createDiv({ cls: "memoria-cal-title", text: `${year}\u5E74${month + 1}\u6708` }).addEventListener("click", () => {
-      year = today.getFullYear();
-      month = today.getMonth();
-      render();
-    });
-    const nextBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": "\u4E0B\u4E2A\u6708" } });
-    (0, import_obsidian5.setIcon)(nextBtn, "chevron-right");
-    prevBtn.addEventListener("click", () => {
-      month === 0 ? (month = 11, year--) : month--;
-      render();
-    });
-    nextBtn.addEventListener("click", () => {
-      month === 11 ? (month = 0, year++) : month++;
-      render();
-    });
-    const weekHead = el.createDiv({ cls: "memoria-cal-week-head" });
-    for (const wd of WEEKDAY_CHARS) weekHead.createDiv({ cls: "memoria-cal-wday", text: wd });
-    const grid = el.createDiv({ cls: "memoria-cal-grid" });
-    const firstDay = new Date(year, month, 1);
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const startOffset = firstDay.getDay();
-    for (let i = 0; i < startOffset; i++) grid.createDiv({ cls: "memoria-cal-cell empty" });
-    const todayStr = formatCalDate(today);
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = formatCalDate(new Date(year, month, d));
-      const count = (_a2 = dateCounts.get(dateStr)) != null ? _a2 : 0;
-      const cell = grid.createDiv({
-        cls: "memoria-cal-cell" + (count > 0 ? " has-memo" : "") + (dateStr === todayStr ? " is-today" : "") + (dateStr === state.activeDate ? " is-active" : ""),
-        attr: { title: count > 0 ? `${dateStr}  ${count} \u6761` : dateStr }
-      });
-      cell.createDiv({ cls: "memoria-cal-num", text: String(d) });
-      if (count > 0) {
-        const dot = cell.createDiv({ cls: "memoria-cal-dot" });
-        dot.addClass(`level-${count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4}`);
-      }
-      cell.addEventListener("click", () => state.onPickDate(dateStr));
-    }
-  };
-  render();
-  return {
-    element: el,
-    setMonth: (y, m) => {
-      year = y;
-      month = m;
-      render();
-    }
-  };
-}
-function formatCalDate(date) {
-  const y = date.getFullYear();
-  const m = (date.getMonth() + 1).toString().padStart(2, "0");
-  const d = date.getDate().toString().padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
 
 // src/i18n.ts
 var zhCN = {
@@ -1358,11 +1496,136 @@ var zhCN = {
   "settings.repo.desc": "\u67E5\u770B\u6E90\u7801\u3001\u53CD\u9988\u95EE\u9898\u3001\u63D0\u51FA\u5EFA\u8BAE\uFF0C\u90FD\u5728\u8FD9\u91CC\u89C1",
   "settings.repo.btn": "\u6253\u5F00\u4ED3\u5E93",
   "settings.version": "\u5F53\u524D\u7248\u672C\uFF1Av{ver}",
+  "settings.promoteFolder.name": "\u6B63\u5F0F\u7B14\u8BB0\u8F93\u51FA\u76EE\u5F55",
+  "settings.promoteFolder.desc": "\u4ECE memo \u8F6C\u4E3A\u72EC\u7ACB Markdown \u7B14\u8BB0\u65F6\u9ED8\u8BA4\u4FDD\u5B58\u5230\u6B64\u76EE\u5F55\uFF08\u76F8\u5BF9 vault \u6839\u76EE\u5F55\uFF09\u3002",
   "common.confirm": "\u786E\u5B9A",
   "common.cancel": "\u53D6\u6D88",
   "common.close": "\u5173\u95ED",
   "common.refresh": "\u5237\u65B0",
-  "common.loading": "\u52A0\u8F7D\u4E2D\u2026"
+  "common.loading": "\u52A0\u8F7D\u4E2D\u2026",
+  "toolbar.trash": "\u56DE\u6536\u7AD9",
+  "toolbar.tagTools": "\u6807\u7B7E\u6574\u7406",
+  "toolbar.openTrashCmd": "\u6253\u5F00 Memoria \u56DE\u6536\u7AD9",
+  "toolbar.openTagToolsCmd": "\u6253\u5F00 Memoria \u6807\u7B7E\u6574\u7406",
+  "toolbar.quickCaptureCmd": "{submit}\uFF08\u5F39\u7A97\uFF09",
+  "toolbar.moreActions": "\u66F4\u591A\u64CD\u4F5C",
+  "input.hint": "Ctrl+Enter \xB7 \u62D6\u62FD/\u7C98\u8D34\u56FE\u7247",
+  "input.timeChipTitle": "\u5DE6\u952E\u9009\u62E9\u65F6\u95F4 \xB7 \u53F3\u952E\u91CD\u7F6E\u4E3A\u5F53\u524D\u65F6\u95F4",
+  "input.tableInsert": "\u70B9\u51FB\u683C\u5B50\u76F4\u63A5\u63D2\u5165",
+  "input.tableSize": "0 \xD7 0",
+  "card.promote": "\u8F6C\u4E3A\u6B63\u5F0F\u7B14\u8BB0",
+  "promote.title": "\u6807\u9898",
+  "promote.folder": "\u8F93\u51FA\u76EE\u5F55",
+  "promote.hint": "\u4F1A\u521B\u5EFA\u72EC\u7ACB Markdown \u6587\u4EF6\uFF0C\u5E76\u4FDD\u7559\u539F memo \u6765\u6E90\u4FE1\u606F\u3002",
+  "promote.create": "\u521B\u5EFA\u5E76\u6253\u5F00",
+  "promote.requireTitle": "\u8BF7\u5148\u586B\u5199\u6807\u9898",
+  "promote.created": "\u5DF2\u521B\u5EFA\u6B63\u5F0F\u7B14\u8BB0\uFF1A{path}",
+  "promote.failed": "\u521B\u5EFA\u5931\u8D25\uFF1A{msg}",
+  "list.readMore": " \u7EE7\u7EED\u9605\u8BFB",
+  "list.collapse": " \u6536\u8D77",
+  "sidebar.saveFilter": "\u4FDD\u5B58\u7B5B\u9009",
+  "sidebar.saveCurrentFilter": "\u4FDD\u5B58\u5F53\u524D\u7B5B\u9009",
+  "sidebar.deleteFilter": "\u5220\u9664\u7B5B\u9009\u5668",
+  "notice.filterDeleted": "\u5DF2\u5220\u9664\u7B5B\u9009\u5668",
+  "filter.saveTitle": "\u4FDD\u5B58\u5F53\u524D\u7B5B\u9009",
+  "filter.namePlaceholder": "\u7B5B\u9009\u5668\u540D\u79F0",
+  "filter.save": "\u4FDD\u5B58",
+  "filter.requireName": "\u8BF7\u5148\u586B\u5199\u7B5B\u9009\u5668\u540D\u79F0",
+  "notice.filterSaved": "\u7B5B\u9009\u5668\u5DF2\u4FDD\u5B58",
+  // 回收站视图
+  "trash.viewTitle": "Memoria \u56DE\u6536\u7AD9",
+  "trash.openFile": "\u6253\u5F00 _trash.md",
+  "trash.clear": "\u6E05\u7A7A\u56DE\u6536\u7AD9",
+  "trash.clearConfirm": "\u786E\u5B9A\u6E05\u7A7A\u56DE\u6536\u7AD9\u4E2D\u7684 {n} \u6761\u8BB0\u5F55\u5417\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002",
+  "trash.cleared": "\u56DE\u6536\u7AD9\u5DF2\u6E05\u7A7A",
+  "trash.clearFailed": "\u6E05\u7A7A\u5931\u8D25\uFF1A{msg}",
+  "trash.searchPlaceholder": "\u641C\u7D22\u5DF2\u5220\u9664\u7B14\u8BB0\u3001\u6765\u6E90\u6587\u4EF6\u6216\u65E5\u671F",
+  "trash.total": "\u5171 {n} \u6761\u5DF2\u5220\u9664\u8BB0\u5F55",
+  "trash.noMatch": "\u6CA1\u6709\u5339\u914D\u7684\u5220\u9664\u8BB0\u5F55",
+  "trash.empty": "\u56DE\u6536\u7AD9\u662F\u7A7A\u7684",
+  "trash.emptySub": "\u5220\u9664 memo \u540E\uFF0C\u5982\u679C\u542F\u7528\u4E86\u56DE\u6536\u7AD9\uFF0C\u4F1A\u5728\u8FD9\u91CC\u770B\u5230\u5B83\u4EEC\u3002",
+  "trash.originalTime": "\u539F\u65F6\u95F4 {date} {time}",
+  "trash.deletedAt": "\u5220\u9664\u4E8E {deletedAt} \xB7 {source}",
+  "trash.restore": " \u6062\u590D",
+  "trash.restored": "\u5DF2\u6062\u590D\u5230\u539F\u65E5\u671F",
+  "trash.restoreFailed": "\u6062\u590D\u5931\u8D25\uFF1A{msg}",
+  "trash.purge": " \u6C38\u4E45\u5220\u9664",
+  "trash.purgeConfirm": "\u786E\u5B9A\u4ECE\u56DE\u6536\u7AD9\u6C38\u4E45\u5220\u9664\u8FD9\u6761\u8BB0\u5F55\u5417\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002",
+  "trash.purged": "\u5DF2\u6C38\u4E45\u5220\u9664",
+  "trash.deleteFailed": "\u5220\u9664\u5931\u8D25\uFF1A{msg}",
+  "trash.loadFailed": "\u56DE\u6536\u7AD9\u8BFB\u53D6\u5931\u8D25\uFF1A{msg}",
+  "trash.fileMissing": "\u56DE\u6536\u7AD9\u6587\u4EF6\u8FD8\u4E0D\u5B58\u5728",
+  // 标签整理视图
+  "tagTools.viewTitle": "Memoria \u6807\u7B7E\u6574\u7406",
+  "tagTools.tagCount": "{n} \u4E2A\u6807\u7B7E",
+  "tagTools.lowFreqCount": "{n} \u4E2A\u4F4E\u9891\u6807\u7B7E",
+  "tagTools.searchPlaceholder": "\u641C\u7D22\u6807\u7B7E",
+  "tagTools.total": "\u5171 {n} \u4E2A\u6807\u7B7E",
+  "tagTools.noMatch": "\u6CA1\u6709\u5339\u914D\u7684\u6807\u7B7E",
+  "tagTools.empty": "\u8FD8\u6CA1\u6709\u53EF\u6574\u7406\u7684\u6807\u7B7E",
+  "tagTools.emptySub": "\u7F6E\u9876\u548C\u6536\u85CF\u662F\u4FDD\u7559\u6807\u7B7E\uFF0C\u4E0D\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002",
+  "tagTools.memoCount": "{n} \u6761 memo",
+  "tagTools.rename": " \u91CD\u547D\u540D/\u5408\u5E76",
+  "tagTools.remove": " \u79FB\u9664",
+  "tagTools.renameTitle": "\u91CD\u547D\u540D\u6216\u5408\u5E76 #{tag}",
+  "tagTools.newName": "\u65B0\u6807\u7B7E\u540D",
+  "tagTools.namePlaceholder": "\u4F8B\u5982\uFF1A\u9879\u76EE/\u6BD5\u4E1A\u8BBE\u8BA1",
+  "tagTools.renameHint": "\u4F1A\u540C\u65F6\u5904\u7406 #{tag} \u53CA\u5176\u5B50\u6807\u7B7E\uFF0C\u9884\u8BA1\u5F71\u54CD {n} \u6761 memo\u3002\u82E5\u65B0\u6807\u7B7E\u5DF2\u5B58\u5728\uFF0C\u5219\u76F8\u5F53\u4E8E\u5408\u5E76\u6807\u7B7E\u3002",
+  "tagTools.execute": "\u6267\u884C",
+  "tagTools.renameConfirm": "\u786E\u5B9A\u5C06 #{old} \u91CD\u547D\u540D/\u5408\u5E76\u4E3A #{next} \u5417\uFF1F\u9884\u8BA1\u5F71\u54CD {n} \u6761 memo\u3002",
+  "tagTools.renamed": "\u5DF2\u66F4\u65B0 {n} \u6761 memo",
+  "tagTools.updateFailed": "\u6807\u7B7E\u66F4\u65B0\u5931\u8D25\uFF1A{msg}",
+  "tagTools.removeConfirm": "\u786E\u5B9A\u4ECE {n} \u6761 memo \u4E2D\u79FB\u9664 #{tag} \u53CA\u5176\u5B50\u6807\u7B7E\u5417\uFF1F\u6B64\u64CD\u4F5C\u4F1A\u6539\u5199 Markdown\u3002",
+  "tagTools.removed": "\u5DF2\u4ECE {n} \u6761 memo \u4E2D\u79FB\u9664\u6807\u7B7E",
+  "tagTools.removeFailed": "\u6807\u7B7E\u79FB\u9664\u5931\u8D25\uFF1A{msg}",
+  "tagTools.loadFailed": "\u6807\u7B7E\u6574\u7406\u52A0\u8F7D\u5931\u8D25\uFF1A{msg}",
+  // 数据报告视图
+  "stats.viewTitle": "Memoria \u6570\u636E\u62A5\u544A",
+  "stats.chars": "\u5B57",
+  "stats.yearHeatmap": "\u{1F525} \u5168\u5E74\u6D3B\u8DC3\u5EA6",
+  "stats.prevYear": "\u4E0A\u4E00\u5E74",
+  "stats.nextYear": "\u4E0B\u4E00\u5E74",
+  "stats.yearLabel": "{year} \u5E74",
+  "stats.monthlyTitle": "\u{1F4C5} \u6708\u5EA6\u5206\u5E03",
+  "stats.monthLabel": "{month}\u6708",
+  "stats.dayCount": "{date}  {count} \u6761",
+  "stats.yearTotal": "{year} \u5E74\u5171 {total} \u6761",
+  "stats.low": "\u5C11 ",
+  "stats.high": " \u591A",
+  "stats.tagCloud": "\u2601\uFE0F \u6807\u7B7E\u4E91",
+  "stats.topTags": "\u{1F3F7}\uFE0F \u6700\u5E38\u7528\u6807\u7B7E Top 10",
+  "stats.noTags": "\u6682\u65E0\u6807\u7B7E",
+  "stats.hourlyTitle": "\u23F0 \u4E00\u5929\u4E2D\u4F60\u4EC0\u4E48\u65F6\u5019\u5199\u5F97\u6700\u591A",
+  "stats.hourlySub": "\u57FA\u4E8E {n} \u6761\u5386\u53F2\u7B14\u8BB0\u7D2F\u8BA1",
+  "stats.hourTitle": "{hour}:00 \u2014 {count} \u6761",
+  "stats.highlights": "\u{1F31F} \u6709\u8DA3\u7684\u53D1\u73B0",
+  // 年度全景视图
+  "year.viewTitle": "Memoria \u5E74\u5EA6\u5168\u666F",
+  "year.prevYear": "\u4E0A\u4E00\u5E74",
+  "year.nextYear": "\u4E0B\u4E00\u5E74",
+  "year.today": "\u4ECA\u5E74",
+  "year.memos": "{n} \u6761\u7B14\u8BB0",
+  "year.activeDays": "{n} \u6D3B\u8DC3\u5929",
+  // 月历组件（单字星期共用）
+  "calendar.prevMonth": "\u4E0A\u4E2A\u6708",
+  "calendar.nextMonth": "\u4E0B\u4E2A\u6708",
+  "calendar.title": "{year}\u5E74{month}\u6708",
+  "calendar.wd.0": "\u65E5",
+  "calendar.wd.1": "\u4E00",
+  "calendar.wd.2": "\u4E8C",
+  "calendar.wd.3": "\u4E09",
+  "calendar.wd.4": "\u56DB",
+  "calendar.wd.5": "\u4E94",
+  "calendar.wd.6": "\u516D",
+  // 图片灯箱
+  "image.prev": "\u4E0A\u4E00\u5F20",
+  "image.next": "\u4E0B\u4E00\u5F20",
+  "notice.imageSaved": "\u56FE\u7247\u5DF2\u4FDD\u5B58: {name}",
+  "input.dateLabel": "{month}\u6708{day}\u65E5",
+  "filter.saveHint": "\u5C06\u4FDD\u5B58\uFF1A{desc}",
+  "stats.moreCount": "...\u8FD8\u6709 {n} \u6761",
+  "stats.monthBarTitle": "{key}: {count} \u6761",
+  "stats.tagCountTitle": "{count} \u6761"
 };
 var enUS = {
   "sidebar.views": "Views",
@@ -1548,11 +1811,136 @@ var enUS = {
   "settings.repo.desc": "Source code, issues and feature requests \u2014 all here",
   "settings.repo.btn": "Open repo",
   "settings.version": "Current version: v{ver}",
+  "settings.promoteFolder.name": "Promote output folder",
+  "settings.promoteFolder.desc": "Where memos are saved when promoted to standalone Markdown notes (relative to vault root).",
   "common.confirm": "OK",
   "common.cancel": "Cancel",
   "common.close": "Close",
   "common.refresh": "Refresh",
-  "common.loading": "Loading\u2026"
+  "common.loading": "Loading\u2026",
+  "toolbar.trash": "Trash",
+  "toolbar.tagTools": "Tag tools",
+  "toolbar.openTrashCmd": "Open Memoria trash",
+  "toolbar.openTagToolsCmd": "Open Memoria tag tools",
+  "toolbar.quickCaptureCmd": "{submit} (popup)",
+  "toolbar.moreActions": "More actions",
+  "input.hint": "Ctrl+Enter \xB7 drag/paste images",
+  "input.timeChipTitle": "Left-click to pick time \xB7 Right-click to reset to now",
+  "input.tableInsert": "Click a cell to insert",
+  "input.tableSize": "0 \xD7 0",
+  "card.promote": "Promote to note",
+  "promote.title": "Title",
+  "promote.folder": "Output folder",
+  "promote.hint": "Creates a standalone Markdown file, keeping the original memo source info.",
+  "promote.create": "Create & open",
+  "promote.requireTitle": "Please fill in a title first",
+  "promote.created": "Note created: {path}",
+  "promote.failed": "Creation failed: {msg}",
+  "list.readMore": " Read more",
+  "list.collapse": " Collapse",
+  "sidebar.saveFilter": "Saved filters",
+  "sidebar.saveCurrentFilter": "Save current filter",
+  "sidebar.deleteFilter": "Delete filter",
+  "notice.filterDeleted": "Filter deleted",
+  "filter.saveTitle": "Save current filter",
+  "filter.namePlaceholder": "Filter name",
+  "filter.save": "Save",
+  "filter.requireName": "Please enter a filter name",
+  "notice.filterSaved": "Filter saved",
+  // Trash view
+  "trash.viewTitle": "Memoria Trash",
+  "trash.openFile": "Open _trash.md",
+  "trash.clear": "Clear trash",
+  "trash.clearConfirm": "Clear all {n} records in trash? This cannot be undone.",
+  "trash.cleared": "Trash cleared",
+  "trash.clearFailed": "Clear failed: {msg}",
+  "trash.searchPlaceholder": "Search deleted memos, source file or date",
+  "trash.total": "{n} deleted records",
+  "trash.noMatch": "No matching deleted records",
+  "trash.empty": "Trash is empty",
+  "trash.emptySub": "Deleted memos will show up here when trash is enabled.",
+  "trash.originalTime": "Original time {date} {time}",
+  "trash.deletedAt": "Deleted at {deletedAt} \xB7 {source}",
+  "trash.restore": " Restore",
+  "trash.restored": "Restored to original date",
+  "trash.restoreFailed": "Restore failed: {msg}",
+  "trash.purge": " Purge",
+  "trash.purgeConfirm": "Permanently delete this record from trash? This cannot be undone.",
+  "trash.purged": "Purged",
+  "trash.deleteFailed": "Delete failed: {msg}",
+  "trash.loadFailed": "Failed to read trash: {msg}",
+  "trash.fileMissing": "Trash file does not exist yet",
+  // Tag tools view
+  "tagTools.viewTitle": "Memoria Tag Tools",
+  "tagTools.tagCount": "{n} tags",
+  "tagTools.lowFreqCount": "{n} low-frequency tags",
+  "tagTools.searchPlaceholder": "Search tags",
+  "tagTools.total": "{n} tags total",
+  "tagTools.noMatch": "No matching tags",
+  "tagTools.empty": "No tags to organize yet",
+  "tagTools.emptySub": "Pinned and starred are reserved tags and won't appear here.",
+  "tagTools.memoCount": "{n} memos",
+  "tagTools.rename": " Rename/Merge",
+  "tagTools.remove": " Remove",
+  "tagTools.renameTitle": "Rename or merge #{tag}",
+  "tagTools.newName": "New tag name",
+  "tagTools.namePlaceholder": "e.g. project/graduation",
+  "tagTools.renameHint": "Processes #{tag} and its subtags, affecting about {n} memos. If the new tag exists, tags are merged.",
+  "tagTools.execute": "Apply",
+  "tagTools.renameConfirm": "Rename/merge #{old} to #{next}? About {n} memos affected.",
+  "tagTools.renamed": "Updated {n} memos",
+  "tagTools.updateFailed": "Tag update failed: {msg}",
+  "tagTools.removeConfirm": "Remove #{tag} and its subtags from {n} memos? This rewrites Markdown.",
+  "tagTools.removed": "Removed tag from {n} memos",
+  "tagTools.removeFailed": "Tag removal failed: {msg}",
+  "tagTools.loadFailed": "Failed to load tag tools: {msg}",
+  // Stats view
+  "stats.viewTitle": "Memoria Stats",
+  "stats.chars": "chars",
+  "stats.yearHeatmap": "\u{1F525} Yearly activity",
+  "stats.prevYear": "Previous year",
+  "stats.nextYear": "Next year",
+  "stats.yearLabel": "{year}",
+  "stats.monthlyTitle": "\u{1F4C5} Monthly distribution",
+  "stats.monthLabel": "{month}",
+  "stats.dayCount": "{date}  {count} memos",
+  "stats.yearTotal": "{total} memos in {year}",
+  "stats.low": "Low ",
+  "stats.high": " High",
+  "stats.tagCloud": "\u2601\uFE0F Tag cloud",
+  "stats.topTags": "\u{1F3F7}\uFE0F Top 10 tags",
+  "stats.noTags": "No tags yet",
+  "stats.hourlyTitle": "\u23F0 When do you write the most",
+  "stats.hourlySub": "Based on {n} historical memos",
+  "stats.hourTitle": "{hour}:00 \u2014 {count} memos",
+  "stats.highlights": "\u{1F31F} Fun facts",
+  // Year overview view
+  "year.viewTitle": "Memoria Year Overview",
+  "year.prevYear": "Previous year",
+  "year.nextYear": "Next year",
+  "year.today": "This year",
+  "year.memos": "{n} memos",
+  "year.activeDays": "{n} active days",
+  // Calendar component (single-char weekdays, shared)
+  "calendar.prevMonth": "Previous month",
+  "calendar.nextMonth": "Next month",
+  "calendar.title": "{year}/{month}",
+  "calendar.wd.0": "S",
+  "calendar.wd.1": "M",
+  "calendar.wd.2": "T",
+  "calendar.wd.3": "W",
+  "calendar.wd.4": "T",
+  "calendar.wd.5": "F",
+  "calendar.wd.6": "S",
+  // Image lightbox
+  "image.prev": "Previous",
+  "image.next": "Next",
+  "notice.imageSaved": "Image saved: {name}",
+  "input.dateLabel": "{month}/{day}",
+  "filter.saveHint": "Will save: {desc}",
+  "stats.moreCount": "...{n} more",
+  "stats.monthBarTitle": "{key}: {count} memos",
+  "stats.tagCountTitle": "{count} memos"
 };
 var currentLang = "zh-CN";
 var activeDict = zhCN;
@@ -1588,6 +1976,205 @@ function t(key, params) {
     }
   }
   return text;
+}
+
+// src/image.ts
+var WIKILINK_IMG_RE = /!\[\[([^\]]+?)(?:\|([^\]]*))?\]\]/g;
+var MD_IMG_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+function isImageExt(ext) {
+  return /^(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(ext);
+}
+function extractImages(app, content, filePath) {
+  const images = [];
+  let text = content.replace(WIKILINK_IMG_RE, (match, path, alt) => {
+    var _a;
+    const name = path.trim();
+    const ext = ((_a = name.split(".").pop()) != null ? _a : "").toLowerCase();
+    if (!isImageExt(ext)) return match;
+    const file = app.metadataCache.getFirstLinkpathDest(name, filePath);
+    if (!(file instanceof import_obsidian4.TFile)) return match;
+    images.push({ vaultPath: file.path, src: app.vault.getResourcePath(file), alt: alt != null ? alt : file.basename });
+    return "";
+  });
+  text = text.replace(MD_IMG_RE, (match, alt, src) => {
+    var _a;
+    const url = src.trim();
+    const ext = (_a = url.split(/[?#]/)[0].split(".").pop()) != null ? _a : "";
+    if (!isImageExt(ext) && !url.startsWith("data:image/")) return match;
+    let resolvedSrc = url;
+    if (!url.startsWith("http") && !url.startsWith("data:")) {
+      const file = app.metadataCache.getFirstLinkpathDest(url, filePath);
+      if (file instanceof import_obsidian4.TFile) resolvedSrc = app.vault.getResourcePath(file);
+    }
+    images.push({ src: resolvedSrc, alt: alt || "image" });
+    return "";
+  });
+  text = text.split("\n").map((l) => l.replace(/\s+$/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { text, images };
+}
+function renderImageGrid(container, images, onClickImage) {
+  if (images.length === 0) return;
+  const grid = container.createDiv({
+    cls: `memoria-img-grid memoria-img-grid-${Math.min(images.length, 9)}`
+  });
+  images.slice(0, 9).forEach((img, i) => {
+    const cell = grid.createDiv({ cls: "memoria-img-cell" });
+    cell.createEl("img", {
+      cls: "memoria-img",
+      attr: { src: img.src, alt: img.alt, loading: "lazy" }
+    }).addEventListener("click", (e) => {
+      e.stopPropagation();
+      onClickImage(i);
+    });
+    if (i === 8 && images.length > 9) {
+      const overlay = cell.createDiv({ cls: "memoria-img-overlay" });
+      overlay.setText(`+${images.length - 9}`);
+      overlay.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onClickImage(8);
+      });
+    }
+  });
+}
+function showLightbox(images, initialIndex) {
+  let current = initialIndex;
+  const backdrop = document.body.createDiv({ cls: "memoria-lightbox" });
+  const stage = backdrop.createDiv({ cls: "memoria-lightbox-stage" });
+  const img = stage.createEl("img", { cls: "memoria-lightbox-img" });
+  const counter = backdrop.createDiv({ cls: "memoria-lightbox-counter" });
+  const closeBtn = backdrop.createEl("button", {
+    cls: "memoria-lightbox-close",
+    text: "\xD7",
+    attr: { "aria-label": t("common.close") }
+  });
+  const prevBtn = backdrop.createEl("button", {
+    cls: "memoria-lightbox-nav memoria-lightbox-prev",
+    text: "\u2039",
+    attr: { "aria-label": t("image.prev") }
+  });
+  const nextBtn = backdrop.createEl("button", {
+    cls: "memoria-lightbox-nav memoria-lightbox-next",
+    text: "\u203A",
+    attr: { "aria-label": t("image.next") }
+  });
+  const update = () => {
+    img.src = images[current].src;
+    img.alt = images[current].alt;
+    counter.setText(`${current + 1} / ${images.length}`);
+    prevBtn.style.visibility = current > 0 ? "visible" : "hidden";
+    nextBtn.style.visibility = current < images.length - 1 ? "visible" : "hidden";
+  };
+  update();
+  const close = () => {
+    backdrop.remove();
+    document.removeEventListener("keydown", onKey);
+  };
+  const prev = () => {
+    if (current > 0) {
+      current--;
+      update();
+    }
+  };
+  const next = () => {
+    if (current < images.length - 1) {
+      current++;
+      update();
+    }
+  };
+  closeBtn.addEventListener("click", close);
+  prevBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    prev();
+  });
+  nextBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    next();
+  });
+  backdrop.addEventListener("click", (e) => {
+    (e.target === backdrop || e.target === stage) && close();
+  });
+  img.addEventListener("click", (e) => {
+    e.stopPropagation();
+    next();
+  });
+  const onKey = (e) => {
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowLeft") prev();
+    else if (e.key === "ArrowRight") next();
+  };
+  document.addEventListener("keydown", onKey);
+}
+
+// src/calendar.ts
+var import_obsidian5 = require("obsidian");
+var WEEKDAY_KEYS = ["calendar.wd.0", "calendar.wd.1", "calendar.wd.2", "calendar.wd.3", "calendar.wd.4", "calendar.wd.5", "calendar.wd.6"];
+function renderCalendar(container, memos, state, initialYear, initialMonth) {
+  var _a;
+  const today = /* @__PURE__ */ new Date();
+  let year = initialYear != null ? initialYear : today.getFullYear();
+  let month = initialMonth != null ? initialMonth : today.getMonth();
+  const el = container.createDiv({ cls: "memoria-calendar" });
+  const dateCounts = /* @__PURE__ */ new Map();
+  for (const m of memos) dateCounts.set(m.date, ((_a = dateCounts.get(m.date)) != null ? _a : 0) + 1);
+  const render = () => {
+    var _a2;
+    el.empty();
+    const head = el.createDiv({ cls: "memoria-cal-head" });
+    const prevBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": t("calendar.prevMonth") } });
+    (0, import_obsidian5.setIcon)(prevBtn, "chevron-left");
+    head.createDiv({ cls: "memoria-cal-title", text: t("calendar.title", { year, month: month + 1 }) }).addEventListener("click", () => {
+      year = today.getFullYear();
+      month = today.getMonth();
+      render();
+    });
+    const nextBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": t("calendar.nextMonth") } });
+    (0, import_obsidian5.setIcon)(nextBtn, "chevron-right");
+    prevBtn.addEventListener("click", () => {
+      month === 0 ? (month = 11, year--) : month--;
+      render();
+    });
+    nextBtn.addEventListener("click", () => {
+      month === 11 ? (month = 0, year++) : month++;
+      render();
+    });
+    const weekHead = el.createDiv({ cls: "memoria-cal-week-head" });
+    for (let w = 0; w < WEEKDAY_KEYS.length; w++) weekHead.createDiv({ cls: "memoria-cal-wday", text: t(WEEKDAY_KEYS[w]) });
+    const grid = el.createDiv({ cls: "memoria-cal-grid" });
+    const firstDay = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const startOffset = firstDay.getDay();
+    for (let i = 0; i < startOffset; i++) grid.createDiv({ cls: "memoria-cal-cell empty" });
+    const todayStr = formatCalDate(today);
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = formatCalDate(new Date(year, month, d));
+      const count = (_a2 = dateCounts.get(dateStr)) != null ? _a2 : 0;
+      const cell = grid.createDiv({
+        cls: "memoria-cal-cell" + (count > 0 ? " has-memo" : "") + (dateStr === todayStr ? " is-today" : "") + (dateStr === state.activeDate ? " is-active" : ""),
+        attr: { title: count > 0 ? t("stats.dayCount", { date: dateStr, count }) : dateStr }
+      });
+      cell.createDiv({ cls: "memoria-cal-num", text: String(d) });
+      if (count > 0) {
+        const dot = cell.createDiv({ cls: "memoria-cal-dot" });
+        dot.addClass(`level-${count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4}`);
+      }
+      cell.addEventListener("click", () => state.onPickDate(dateStr));
+    }
+  };
+  render();
+  return {
+    element: el,
+    setMonth: (y, m) => {
+      year = y;
+      month = m;
+      render();
+    }
+  };
+}
+function formatCalDate(date) {
+  const y = date.getFullYear();
+  const m = (date.getMonth() + 1).toString().padStart(2, "0");
+  const d = date.getDate().toString().padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 // src/search.ts
@@ -2186,9 +2773,16 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     this.tagSuggest = null;
     this.overviewMode = "heatmap";
     this.editingMemo = null;
+    this.activeSavedFilterId = null;
     this.timeOverride = null;
     this.timeOverrideBeforeEdit = null;
     this.timeTickHandle = null;
+    /**
+     * 性能：memo → 派生渲染结果缓存。
+     * store 每次 reload 都会生成新的 Memo 对象，WeakMap 自动失效，无一致性问题。
+     */
+    this.renderCache = /* @__PURE__ */ new WeakMap();
+    this.moodCache = /* @__PURE__ */ new WeakMap();
     this.editBannerEl = null;
     this.timeChipEl = null;
     this.store = store;
@@ -2229,6 +2823,16 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     this.stopTimeTick();
     this.childComponent.unload();
   }
+  /** 打开（或聚焦已存在）的指定类型视图 leaf */
+  openLeaf(type) {
+    const existing = this.app.workspace.getLeavesOfType(type);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    void leaf.setViewState({ type, active: true }).then(() => this.app.workspace.revealLeaf(leaf));
+  }
   buildLayout() {
     const root = this.contentEl;
     root.empty();
@@ -2250,6 +2854,7 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     this.searchEl.addEventListener("input", () => {
       this.filter.keyword = this.searchEl.value.trim();
       this.filter.searchTokens = parseSearch(this.filter.keyword);
+      this.activeSavedFilterId = null;
       this.pageLimit = this.getInitialPageLimit();
       this.renderList();
     });
@@ -2259,31 +2864,25 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     refreshBtn.addEventListener("click", () => this.store.reloadAll());
     const statsBtn = tools.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("toolbar.statsReport") } });
     (0, import_obsidian7.setIcon)(statsBtn, "bar-chart-3");
-    statsBtn.addEventListener("click", async () => {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_STATS);
-      if (existing.length) {
-        this.app.workspace.revealLeaf(existing[0]);
-        return;
-      }
-      const leaf = this.app.workspace.getLeaf("tab");
-      await leaf.setViewState({ type: VIEW_TYPE_STATS, active: true });
-      this.app.workspace.revealLeaf(leaf);
-    });
+    statsBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_STATS));
     const yearBtn = tools.createEl("button", {
       cls: "memoria-icon-btn",
       attr: { "aria-label": t("toolbar.yearPanorama"), title: t("toolbar.yearPanorama") }
     });
     (0, import_obsidian7.setIcon)(yearBtn, "calendar-days");
-    yearBtn.addEventListener("click", async () => {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_YEAR);
-      if (existing.length) {
-        this.app.workspace.revealLeaf(existing[0]);
-        return;
-      }
-      const leaf = this.app.workspace.getLeaf("tab");
-      await leaf.setViewState({ type: VIEW_TYPE_YEAR, active: true });
-      this.app.workspace.revealLeaf(leaf);
+    yearBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_YEAR));
+    const trashBtn = tools.createEl("button", {
+      cls: "memoria-icon-btn",
+      attr: { "aria-label": t("toolbar.trash"), title: t("toolbar.trash") }
     });
+    (0, import_obsidian7.setIcon)(trashBtn, "trash-2");
+    trashBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_TRASH));
+    const tagToolsBtn = tools.createEl("button", {
+      cls: "memoria-icon-btn",
+      attr: { "aria-label": t("toolbar.tagTools"), title: t("toolbar.tagTools") }
+    });
+    (0, import_obsidian7.setIcon)(tagToolsBtn, "tags");
+    tagToolsBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_TAG_TOOLS));
     const densityBtn = tools.createEl("button", {
       cls: "memoria-icon-btn",
       attr: { "aria-label": t("density.toggle"), title: t("density.toggle") }
@@ -2325,7 +2924,7 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     const card = parent.createDiv({ cls: "memoria-input-card" });
     this.inputEl = card.createEl("textarea", {
       cls: "memoria-input",
-      attr: { placeholder: "\u6B64\u523B\uFF0C\u4F60\u5728\u60F3\u4EC0\u4E48\uFF1F" }
+      attr: { placeholder: t("input.placeholder") }
     });
     this.tagSuggest = new TagSuggest(this.app, this.inputEl);
     this.inputEl.addEventListener("keydown", (e) => {
@@ -2384,35 +2983,35 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     });
     const toolbar = card.createDiv({ cls: "memoria-input-toolbar" });
     const tools = toolbar.createDiv({ cls: "memoria-input-tools" });
-    const tagBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "\u63D2\u5165\u6807\u7B7E #" } });
+    const tagBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertTag") } });
     (0, import_obsidian7.setIcon)(tagBtn, "hash");
     tagBtn.addEventListener("click", () => this.insertAtCursor("#"));
-    const imgBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "\u63D2\u5165\u56FE\u7247" } });
+    const imgBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertImage") } });
     (0, import_obsidian7.setIcon)(imgBtn, "image");
     imgBtn.addEventListener("click", () => this.pickImageFromDisk());
-    const listBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "\u63D2\u5165\u65E0\u5E8F\u5217\u8868" } });
+    const listBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertUL") } });
     (0, import_obsidian7.setIcon)(listBtn, "list");
     listBtn.addEventListener("click", () => this.insertListAtCursor("- "));
-    const orderedBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "\u63D2\u5165\u6709\u5E8F\u5217\u8868" } });
+    const orderedBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertOL") } });
     (0, import_obsidian7.setIcon)(orderedBtn, "list-ordered");
     orderedBtn.addEventListener("click", () => this.insertOrderedListAtCursor());
-    const taskBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "\u63D2\u5165\u4EFB\u52A1\u5217\u8868" } });
+    const taskBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertTask") } });
     (0, import_obsidian7.setIcon)(taskBtn, "square-check");
     taskBtn.addEventListener("click", () => this.insertListAtCursor("- [ ] "));
-    const tableBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "\u63D2\u5165\u8868\u683C" } });
+    const tableBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertTable") } });
     (0, import_obsidian7.setIcon)(tableBtn, "table");
     tableBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.showTablePicker(tableBtn);
     });
-    tools.createSpan({ cls: "memoria-input-hint", text: "Ctrl+Enter \xB7 \u62D6\u62FD/\u7C98\u8D34\u56FE\u7247" });
+    tools.createSpan({ cls: "memoria-input-hint", text: t("input.hint") });
     const submitWrap = toolbar.createDiv({ cls: "memoria-submit-wrap" });
-    const cancelBtn = submitWrap.createEl("button", { cls: "memoria-cancel-btn memoria-hidden", text: "\u53D6\u6D88" });
+    const cancelBtn = submitWrap.createEl("button", { cls: "memoria-cancel-btn memoria-hidden", text: t("common.cancel") });
     cancelBtn.addEventListener("click", () => this.exitEditMode());
     this.editBannerEl = cancelBtn;
     this.timeChipEl = submitWrap.createDiv({
       cls: "memoria-time-chip",
-      attr: { title: "\u5DE6\u952E\u9009\u62E9\u65F6\u95F4 \xB7 \u53F3\u952E\u91CD\u7F6E\u4E3A\u5F53\u524D\u65F6\u95F4" }
+      attr: { title: t("input.timeChipTitle") }
     });
     this.timeChipEl.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -2427,7 +3026,7 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     this.timeTickHandle = window.setInterval(() => {
       if (this.timeOverride === null) this.refreshTimeChip();
     }, 3e4);
-    const sendBtn = submitWrap.createEl("button", { cls: "memoria-submit-btn", text: "\u53D1\u9001" });
+    const sendBtn = submitWrap.createEl("button", { cls: "memoria-submit-btn", text: t("input.submit") });
     sendBtn.addEventListener("click", () => this.submitMemo());
   }
   getEffectiveDate() {
@@ -2449,7 +3048,7 @@ var _MemoriaView = class _MemoriaView extends import_obsidian7.ItemView {
     const mm = d.getMinutes().toString().padStart(2, "0");
     const isDateOverridden = this.editingMemo !== null || this.filter.date !== null;
     if (isDateOverridden) {
-      const mmdd = `${d.getMonth() + 1}\u6708${d.getDate()}\u65E5`;
+      const mmdd = t("input.dateLabel", { month: d.getMonth() + 1, day: d.getDate() });
       this.timeChipEl.setText(`${mmdd} ${hh}:${mm}`);
     } else {
       this.timeChipEl.setText(`${hh}:${mm}`);
@@ -2719,7 +3318,7 @@ ${indent}${marker}`);
     const picker = document.body.createDiv({ cls: "memoria-table-picker" + (isMobile ? " is-mobile" : "") });
     const label = picker.createDiv({
       cls: "memoria-table-picker-label",
-      text: isMobile ? "\u70B9\u51FB\u683C\u5B50\u76F4\u63A5\u63D2\u5165" : "0 \xD7 0"
+      text: isMobile ? t("input.tableInsert") : t("input.tableSize")
     });
     const grid = picker.createDiv({ cls: "memoria-table-picker-grid" });
     const cells = [];
@@ -2806,10 +3405,10 @@ ${indent}${marker}`);
       const val = this.inputEl.value;
       if (val && !/\n$/.test(val)) this.insertAtCursor("\n" + link + "\n");
       else this.insertAtCursor(link + "\n");
-      new import_obsidian7.Notice(`\u56FE\u7247\u5DF2\u4FDD\u5B58: ${name}`);
+      new import_obsidian7.Notice(t("notice.imageSaved", { name }));
     } catch (e) {
       console.error(e);
-      new import_obsidian7.Notice("\u56FE\u7247\u4FDD\u5B58\u5931\u8D25\uFF1A" + (e instanceof Error ? e.message : String(e)));
+      new import_obsidian7.Notice(t("notice.imageFailed", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
   async submitMemo() {
@@ -2846,7 +3445,7 @@ ${indent}${marker}`);
       this.autoResizeInput();
     } catch (e) {
       console.error(e);
-      new import_obsidian7.Notice("\u4FDD\u5B58\u5931\u8D25\uFF1A" + (e instanceof Error ? e.message : String(e)));
+      new import_obsidian7.Notice(t("notice.saveFailed", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
   toggleSidebar(open) {
@@ -2878,13 +3477,13 @@ ${indent}${marker}`);
     if (this.editingMemo) {
       this.editBannerEl.removeClass("memoria-hidden");
       card == null ? void 0 : card.addClass("is-editing");
-      this.inputEl.setAttr("placeholder", `\u7F16\u8F91 ${this.editingMemo.date} ${this.editingMemo.time} \u7684\u7B14\u8BB0\uFF08Esc \u53D6\u6D88\uFF09`);
+      this.inputEl.setAttr("placeholder", t("input.editPlaceholder", { date: this.editingMemo.date, time: this.editingMemo.time }));
       (_a = this.timeChipEl) == null ? void 0 : _a.removeClass("memoria-hidden");
       this.refreshTimeChip();
     } else {
       this.editBannerEl.addClass("memoria-hidden");
       card == null ? void 0 : card.removeClass("is-editing");
-      this.inputEl.setAttr("placeholder", "\u6B64\u523B\uFF0C\u4F60\u5728\u60F3\u4EC0\u4E48\uFF1F");
+      this.inputEl.setAttr("placeholder", t("input.placeholder"));
       (_b = this.timeChipEl) == null ? void 0 : _b.removeClass("memoria-hidden");
       this.refreshTimeChip();
     }
@@ -2914,8 +3513,8 @@ ${indent}${marker}`);
       if (m.hasOpenTask) openTaskCount++;
     }
     const statsEl = this.sidebarEl.createDiv({ cls: "memoria-stats" });
-    this.renderStatItem(statsEl, all.length.toString(), "\u7B14\u8BB0");
-    this.renderStatItem(statsEl, uniqueTags.size.toString(), "\u6807\u7B7E");
+    this.renderStatItem(statsEl, all.length.toString(), t("stats.memos"));
+    this.renderStatItem(statsEl, uniqueTags.size.toString(), t("stats.tags"));
     this.renderStatItem(statsEl, uniqueDates.size.toString(), t("stats.days"));
     this.renderOverview(this.sidebarEl, all);
     if (this.settings.dailyGoal > 0) {
@@ -2940,7 +3539,7 @@ ${indent}${marker}`);
       const actions = row.createDiv({ cls: "memoria-daily-goal-actions" });
       const switchBtn = actions.createEl("button", {
         cls: "memoria-icon-btn memoria-daily-goal-switch",
-        attr: { "aria-label": this.overviewMode === "heatmap" ? "\u5207\u6362\u4E3A\u6708\u5386" : "\u5207\u6362\u4E3A\u70ED\u529B\u56FE" }
+        attr: { "aria-label": this.overviewMode === "heatmap" ? t("toolbar.toCalendar") : t("toolbar.toHeatmap") }
       });
       (0, import_obsidian7.setIcon)(switchBtn, this.overviewMode === "heatmap" ? "calendar" : "activity");
       switchBtn.addEventListener("click", (e) => {
@@ -2953,7 +3552,7 @@ ${indent}${marker}`);
       const actions = row.createDiv({ cls: "memoria-daily-goal-actions" });
       const switchBtn = actions.createEl("button", {
         cls: "memoria-icon-btn memoria-daily-goal-switch",
-        attr: { "aria-label": this.overviewMode === "heatmap" ? "\u5207\u6362\u4E3A\u6708\u5386" : "\u5207\u6362\u4E3A\u70ED\u529B\u56FE" }
+        attr: { "aria-label": this.overviewMode === "heatmap" ? t("toolbar.toCalendar") : t("toolbar.toHeatmap") }
       });
       (0, import_obsidian7.setIcon)(switchBtn, this.overviewMode === "heatmap" ? "calendar" : "activity");
       switchBtn.addEventListener("click", (e) => {
@@ -2962,29 +3561,30 @@ ${indent}${marker}`);
         this.renderSidebar();
       });
     }
-    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: "\u89C6\u56FE" });
+    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.section.views") });
     const navItems = [
-      { key: "all", icon: "layout-grid", text: "\u5168\u90E8\u7B14\u8BB0", count: all.length },
-      { key: "pinned", icon: "pin", text: "\u7F6E\u9876", count: pinnedCount },
-      { key: "starred", icon: "star", text: "\u6536\u85CF", count: starredCount },
-      { key: "today", icon: "calendar", text: "\u4ECA\u5929" },
-      { key: "week", icon: "calendar-days", text: "\u672C\u5468" },
-      { key: "todo", icon: "square-check", text: "\u5F85\u529E", count: openTaskCount },
-      { key: "on-this-day", icon: "history", text: "\u6BCF\u65E5\u56DE\u987E", count: onThisDayCount },
-      { key: "random", icon: "shuffle", text: "\u968F\u673A\u56DE\u987E" }
+      { key: "all", icon: "layout-grid", text: t("sidebar.all"), count: all.length },
+      { key: "pinned", icon: "pin", text: t("sidebar.pinned"), count: pinnedCount },
+      { key: "starred", icon: "star", text: t("sidebar.starred"), count: starredCount },
+      { key: "today", icon: "calendar", text: t("sidebar.today") },
+      { key: "week", icon: "calendar-days", text: t("sidebar.week") },
+      { key: "todo", icon: "square-check", text: t("sidebar.todo"), count: openTaskCount },
+      { key: "on-this-day", icon: "history", text: t("list.presetOnThisDay"), count: onThisDayCount },
+      { key: "random", icon: "shuffle", text: t("sidebar.random") }
     ];
     for (const item of navItems) this.renderNavItem(item.key, item.icon, item.text, item.count);
-    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: "\u68C0\u7D22\u5F0F" });
-    this.renderNavItem("no-tag", "tag", "\u65E0\u6807\u7B7E", noTagCount);
-    this.renderNavItem("with-image", "image", "\u6709\u56FE\u7247", imgCount);
-    this.renderNavItem("with-link", "link", "\u6709\u94FE\u63A5", linkCount);
+    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.section.search") });
+    this.renderNavItem("no-tag", "tag", t("sidebar.noTag"), noTagCount);
+    this.renderNavItem("with-image", "image", t("sidebar.withImage"), imgCount);
+    this.renderNavItem("with-link", "link", t("sidebar.withLink"), linkCount);
+    this.renderSavedFilters();
     const yearCounts = /* @__PURE__ */ new Map();
     for (const m of all) {
       const y = m.date.substring(0, 4);
       yearCounts.set(y, ((_a = yearCounts.get(y)) != null ? _a : 0) + 1);
     }
     if (yearCounts.size) {
-      this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: "\u5E74\u4EFD" });
+      this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.section.years") });
       for (const [y, cnt] of [...yearCounts.entries()].sort((a, b) => b[0] < a[0] ? -1 : 1)) {
         const item = this.sidebarEl.createDiv({
           cls: "memoria-nav-item" + (this.filter.year === y ? " active" : "")
@@ -2995,6 +3595,7 @@ ${indent}${marker}`);
         item.addEventListener("click", () => {
           this.filter.year = this.filter.year === y ? null : y;
           this.filter.preset = "all";
+          this.activeSavedFilterId = null;
           this.pageLimit = this.getInitialPageLimit();
           this.renderAll();
         });
@@ -3006,7 +3607,7 @@ ${indent}${marker}`);
       if (tagMap.size) {
         const section = this.sidebarEl.createDiv({ cls: "memoria-sidebar-section memoria-section-collapsible" });
         section.createSpan({ cls: "memoria-section-arrow", text: this.tagsExpanded ? "\u25BE" : "\u25B8" });
-        section.createSpan({ text: ` \u6807\u7B7E (${tagMap.size})` });
+        section.createSpan({ text: `${t("sidebar.section.tags")} (${tagMap.size})` });
         section.addEventListener("click", () => {
           this.tagsExpanded = !this.tagsExpanded;
           this.renderSidebar();
@@ -3018,7 +3619,7 @@ ${indent}${marker}`);
     }
   }
   renderNavItem(key, icon, text, count) {
-    const active = this.filter.preset === key && !this.filter.tag && !this.filter.year;
+    const active = !this.activeSavedFilterId && this.filter.preset === key && !this.filter.tag && !this.filter.year;
     const item = this.sidebarEl.createDiv({ cls: "memoria-nav-item" + (active ? " active" : "") });
     (0, import_obsidian7.setIcon)(item.createDiv({ cls: "memoria-nav-icon" }), icon);
     item.createSpan({ cls: "memoria-nav-text", text });
@@ -3028,10 +3629,107 @@ ${indent}${marker}`);
       this.filter.tag = null;
       this.filter.year = null;
       this.filter.date = null;
+      this.activeSavedFilterId = null;
       if (key === "random") this.filter.randomSeed = Date.now();
       this.pageLimit = this.getInitialPageLimit();
       this.renderAll();
     });
+  }
+  renderSavedFilters() {
+    var _a;
+    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.saveFilter") });
+    const saveItem = this.sidebarEl.createDiv({ cls: "memoria-nav-item memoria-save-filter-action" });
+    (0, import_obsidian7.setIcon)(saveItem.createDiv({ cls: "memoria-nav-icon" }), "bookmark-plus");
+    saveItem.createSpan({ cls: "memoria-nav-text", text: t("sidebar.saveCurrentFilter") });
+    saveItem.addEventListener("click", () => this.showSaveFilterModal());
+    for (const filter of (_a = this.settings.savedFilters) != null ? _a : []) {
+      const item = this.sidebarEl.createDiv({
+        cls: "memoria-nav-item memoria-saved-filter-item" + (this.activeSavedFilterId === filter.id ? " active" : "")
+      });
+      (0, import_obsidian7.setIcon)(item.createDiv({ cls: "memoria-nav-icon" }), "bookmark");
+      item.createSpan({ cls: "memoria-nav-text", text: filter.name });
+      const deleteBtn = item.createEl("button", { cls: "memoria-saved-filter-delete", attr: { "aria-label": t("sidebar.deleteFilter") } });
+      (0, import_obsidian7.setIcon)(deleteBtn, "x");
+      item.addEventListener("click", () => this.applySavedFilter(filter));
+      deleteBtn.addEventListener("click", async (e) => {
+        var _a2;
+        e.stopPropagation();
+        this.settings.savedFilters = ((_a2 = this.settings.savedFilters) != null ? _a2 : []).filter((x) => x.id !== filter.id);
+        if (this.activeSavedFilterId === filter.id) this.activeSavedFilterId = null;
+        await this.saveSettings();
+        this.renderSidebar();
+        new import_obsidian7.Notice(t("notice.filterDeleted"));
+      });
+    }
+  }
+  /** 2026-06-03: 保存完整筛选快照，排查结果不一致时优先对照这里和 parseSearch 的输出 */
+  currentFilterSnapshot(name) {
+    return {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      preset: this.filter.preset,
+      tag: this.filter.tag,
+      year: this.filter.year,
+      date: this.filter.date,
+      keyword: this.filter.keyword
+    };
+  }
+  applySavedFilter(saved) {
+    this.filter = {
+      tag: saved.tag,
+      year: saved.year,
+      date: saved.date,
+      keyword: saved.keyword,
+      preset: saved.preset || "all",
+      searchTokens: parseSearch(saved.keyword)
+    };
+    this.activeSavedFilterId = saved.id;
+    this.searchEl.value = saved.keyword;
+    this.pageLimit = this.getInitialPageLimit();
+    this.refreshTimeChip();
+    this.renderAll();
+  }
+  showSaveFilterModal() {
+    const backdrop = document.body.createDiv({ cls: "memoria-modal-backdrop" });
+    const modal = backdrop.createDiv({ cls: "memoria-modal memoria-text-modal" });
+    modal.createDiv({ cls: "memoria-modal-title", text: t("filter.saveTitle") });
+    const input = modal.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: { type: "text", placeholder: t("filter.namePlaceholder") },
+      value: this.describeFilterOnly()
+    });
+    const hint = modal.createDiv({ cls: "memoria-modal-hint" });
+    hint.setText(t("filter.saveHint", { desc: this.describeFilterOnly() }));
+    const btns = modal.createDiv({ cls: "memoria-modal-btns" });
+    const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+    const saveBtn = btns.createEl("button", { text: t("filter.save"), cls: "mod-cta" });
+    const close = () => backdrop.remove();
+    const submit = async () => {
+      var _a;
+      const name = input.value.trim();
+      if (!name) {
+        new import_obsidian7.Notice(t("filter.requireName"));
+        return;
+      }
+      this.settings.savedFilters = [...(_a = this.settings.savedFilters) != null ? _a : [], this.currentFilterSnapshot(name)];
+      await this.saveSettings();
+      close();
+      this.renderSidebar();
+      new import_obsidian7.Notice(t("notice.filterSaved"));
+    };
+    cancelBtn.addEventListener("click", close);
+    saveBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+    });
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) close();
+    });
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 20);
   }
   renderStatItem(parent, num, label) {
     const el = parent.createDiv({ cls: "memoria-stat" });
@@ -3048,6 +3746,7 @@ ${indent}${marker}`);
         onPickDate: (date) => {
           this.filter.date = this.filter.date === date ? null : date;
           this.filter.preset = "all";
+          this.activeSavedFilterId = null;
           this.pageLimit = this.getInitialPageLimit();
           this.refreshTimeChip();
           this.renderAll();
@@ -3091,7 +3790,7 @@ ${indent}${marker}`);
         row.createSpan({ cls: "memoria-heatmap-tooltip-text", text: m.content.split("\n")[0] });
       }
       if (dayMemos.length > 3) {
-        tooltip.createDiv({ cls: "memoria-heatmap-tooltip-more", text: `...\u8FD8\u6709 ${dayMemos.length - 3} \u6761` });
+        tooltip.createDiv({ cls: "memoria-heatmap-tooltip-more", text: t("stats.moreCount", { n: dayMemos.length - 3 }) });
       }
       const rect = cell.getBoundingClientRect();
       tooltip.style.left = `${Math.round(rect.right + 8)}px`;
@@ -3111,7 +3810,7 @@ ${indent}${marker}`);
         const level = count === 0 ? 0 : count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4;
         const cell = colEl.createDiv({
           cls: `memoria-heatmap-cell level-${level}`,
-          attr: { title: count > 0 ? "" : `${dateStr}  0 \u6761` }
+          attr: { title: count > 0 ? "" : t("stats.dayCount", { date: dateStr, count: 0 }) }
         });
         if (count > 0) {
           cell.addEventListener("mouseenter", () => showTooltip(cell, dateStr, count));
@@ -3159,6 +3858,7 @@ ${indent}${marker}`);
       item.addEventListener("click", () => {
         this.filter.tag = this.filter.tag === child.full ? null : child.full;
         this.filter.preset = "all";
+        this.activeSavedFilterId = null;
         this.pageLimit = this.getInitialPageLimit();
         this.renderAll();
       });
@@ -3216,7 +3916,7 @@ ${indent}${marker}`);
     if (this.filter.preset === "random") {
       const rerollBtn = meta.createEl("button", { cls: "memoria-meta-btn" });
       (0, import_obsidian7.setIcon)(rerollBtn.createSpan(), "shuffle");
-      rerollBtn.createSpan({ text: " \u6362\u4E00\u6279" });
+      rerollBtn.createSpan({ text: t("meta.reroll") });
       rerollBtn.addEventListener("click", () => {
         this.filter.randomSeed = Date.now();
         this.renderList();
@@ -3246,7 +3946,7 @@ ${indent}${marker}`);
       const group = this.listEl.createDiv({ cls: "memoria-day-group memoria-pin-group" });
       const head = group.createDiv({ cls: "memoria-day-head memoria-pin-head" });
       (0, import_obsidian7.setIcon)(head.createSpan({ cls: "memoria-pin-head-icon" }), "pin");
-      head.createSpan({ text: `\u7F6E\u9876  \u5171 ${pinned.length} \u6761` });
+      head.createSpan({ text: t("list.pinnedHead", { n: pinned.length }) });
       for (const m of pinned) this.renderMemoCard(group, m);
     }
     const byDate = /* @__PURE__ */ new Map();
@@ -3259,45 +3959,65 @@ ${indent}${marker}`);
     const yesterday = /* @__PURE__ */ new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = toDateStr(yesterday);
-    const weekdays = ["\u5468\u65E5", "\u5468\u4E00", "\u5468\u4E8C", "\u5468\u4E09", "\u5468\u56DB", "\u5468\u4E94", "\u5468\u516D"];
     for (const [date, dayMemos] of byDate) {
       const group = this.listEl.createDiv({ cls: "memoria-day-group" });
       const head = group.createDiv({ cls: "memoria-day-head" });
-      const wd = weekdays[(/* @__PURE__ */ new Date(date + "T00:00:00")).getDay()];
+      const wd = t(`weekday.${(/* @__PURE__ */ new Date(date + "T00:00:00")).getDay()}`);
       let label = `${date}  ${wd}`;
-      if (date === todayStr) label = `\u4ECA\u5929  ${wd}`;
-      else if (date === yesterdayStr) label = `\u6628\u5929  ${wd}`;
+      if (date === todayStr) label = `${t("date.today")}  ${wd}`;
+      else if (date === yesterdayStr) label = `${t("date.yesterday")}  ${wd}`;
       head.setText(label);
       for (const m of dayMemos) this.renderMemoCard(group, m);
     }
     if (this.pageLimit < filtered.length) {
-      this.listEl.createDiv({ cls: "memoria-load-more" }).setText(`\u2193 \u6EDA\u52A8\u52A0\u8F7D\u66F4\u591A\uFF08\u8FD8\u6709 ${filtered.length - this.pageLimit} \u6761\uFF09`);
+      this.listEl.createDiv({ cls: "memoria-load-more" }).setText(t("list.loadMore", { n: filtered.length - this.pageLimit }));
     }
   }
-  describeFilter(count) {
+  getPresetLabel(preset) {
     var _a;
-    const parts = [];
     const presetLabels = {
-      today: "\u4ECA\u5929",
-      week: "\u672C\u5468",
-      random: "\u968F\u673A\u56DE\u987E",
-      "on-this-day": "\u{1F4C5} \u6BCF\u65E5\u56DE\u987E",
-      todo: "\u{1F4CB} \u5F85\u529E",
-      "no-tag": "\u65E0\u6807\u7B7E",
-      "with-image": "\u6709\u56FE\u7247",
-      "with-link": "\u6709\u94FE\u63A5",
-      pinned: "\u{1F4CC} \u7F6E\u9876",
-      starred: "\u2B50 \u6536\u85CF"
+      today: t("sidebar.today"),
+      week: t("sidebar.week"),
+      random: t("sidebar.random"),
+      "on-this-day": t("list.presetOnThisDay"),
+      todo: "\u{1F4CB} " + t("sidebar.todo"),
+      "no-tag": t("sidebar.noTag"),
+      "with-image": t("sidebar.withImage"),
+      "with-link": t("sidebar.withLink"),
+      pinned: t("list.presetPinned"),
+      starred: t("list.presetStarred")
     };
-    if (this.filter.preset !== "all") parts.push((_a = presetLabels[this.filter.preset]) != null ? _a : this.filter.preset);
+    return (_a = presetLabels[preset]) != null ? _a : preset;
+  }
+  describeFilter(count) {
+    const parts = [];
+    if (this.filter.preset !== "all") parts.push(this.getPresetLabel(this.filter.preset));
     if (this.filter.year) parts.push(this.filter.year);
     if (this.filter.date) parts.push(`\u{1F4C5} ${this.filter.date}`);
     if (this.filter.tag) parts.push(`#${this.filter.tag}`);
     if (this.filter.keyword) parts.push(`\u300C${this.filter.keyword}\u300D`);
-    return `${parts.length ? parts.join(" \xB7 ") + " \xB7 " : ""}\u5171 ${count} \u6761`;
+    return `${parts.length ? parts.join(" \xB7 ") + " \xB7 " : ""}${t("list.totalCount", { n: count })}`;
   }
   renderMemoCard(parent, memo) {
-    const mood = this.settings.enableMoodColoring ? detectMood(memo.content) : "neutral";
+    var _a;
+    let bodyText = "";
+    let images = [];
+    const cached = this.renderCache.get(memo);
+    if (cached) {
+      bodyText = cached.bodyText;
+      images = cached.images;
+    } else {
+      const { text } = this.stripTags(memo.content);
+      const extracted = extractImages(this.app, text, memo.file);
+      bodyText = extracted.text;
+      images = extracted.images;
+      this.renderCache.set(memo, { bodyText, images });
+    }
+    let mood = "neutral";
+    if (this.settings.enableMoodColoring) {
+      mood = (_a = this.moodCache.get(memo)) != null ? _a : detectMood(memo.content);
+      this.moodCache.set(memo, mood);
+    }
     const moodCls = mood !== "neutral" ? ` ${moodClass(mood)}` : "";
     const card = parent.createDiv({
       cls: "memoria-card" + (memo.isPinned ? " is-pinned" : "") + (memo.isStarred ? " is-starred" : "") + (this.editingMemo === memo ? " is-editing" : "") + moodCls
@@ -3311,22 +4031,20 @@ ${indent}${marker}`);
     if (memo.isPinned) {
       const pin = timeWrap.createSpan({ cls: "memoria-card-pin" });
       (0, import_obsidian7.setIcon)(pin, "pin");
-      pin.setAttr("aria-label", "\u5DF2\u7F6E\u9876");
+      pin.setAttr("aria-label", t("card.pinnedMark"));
     }
     if (memo.isStarred) {
       const star = timeWrap.createSpan({ cls: "memoria-card-star" });
       (0, import_obsidian7.setIcon)(star, "star");
-      star.setAttr("aria-label", "\u5DF2\u6536\u85CF");
+      star.setAttr("aria-label", t("card.starredMark"));
     }
     timeWrap.createSpan({ cls: "memoria-card-time", text: `${memo.date} ${memo.time}` });
-    const moreBtn = head.createDiv({ cls: "memoria-card-actions" }).createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": "\u66F4\u591A\u64CD\u4F5C" } });
+    const moreBtn = head.createDiv({ cls: "memoria-card-actions" }).createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("toolbar.moreActions") } });
     (0, import_obsidian7.setIcon)(moreBtn, "more-horizontal");
     moreBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.showMemoMenu(e, memo);
     });
-    const { text, tags } = this.stripTags(memo.content);
-    const { text: bodyText, images } = extractImages(this.app, text, memo.file);
     if (bodyText.trim()) {
       const body = card.createDiv({ cls: "memoria-card-body" });
       import_obsidian7.MarkdownRenderer.render(this.app, normalizeForRender(bodyText), body, memo.file, this.childComponent);
@@ -3341,33 +4059,34 @@ ${indent}${marker}`);
           const toggle = body.createDiv({ cls: "memoria-collapse-toggle" });
           const iconSpan = toggle.createSpan({ cls: "memoria-collapse-icon" });
           (0, import_obsidian7.setIcon)(iconSpan, "chevron-down");
-          toggle.createSpan({ text: " \u7EE7\u7EED\u9605\u8BFB" });
+          toggle.createSpan({ text: t("list.readMore") });
           toggle.addEventListener("click", (e) => {
-            var _a, _b;
+            var _a2, _b;
             e.stopPropagation();
             if (body.hasClass("is-collapsed")) {
               body.removeClass("is-collapsed");
               body.addClass("is-expanded");
               (0, import_obsidian7.setIcon)(iconSpan, "chevron-up");
-              (_a = toggle.querySelector(":scope > span:last-child")) == null ? void 0 : _a.setText(" \u6536\u8D77");
+              (_a2 = toggle.querySelector(":scope > span:last-child")) == null ? void 0 : _a2.setText(t("list.collapse"));
             } else {
               body.addClass("is-collapsed");
               body.removeClass("is-expanded");
               (0, import_obsidian7.setIcon)(iconSpan, "chevron-down");
-              (_b = toggle.querySelector(":scope > span:last-child")) == null ? void 0 : _b.setText(" \u7EE7\u7EED\u9605\u8BFB");
+              (_b = toggle.querySelector(":scope > span:last-child")) == null ? void 0 : _b.setText(t("list.readMore"));
             }
           });
         }
       }
     }
     if (images.length) renderImageGrid(card, images, (idx) => showLightbox(images, idx));
-    const visibleTags = tags.filter((t2) => !RESERVED_TAGS.has(t2));
+    const visibleTags = memo.tags.filter((t2) => !RESERVED_TAGS.has(t2));
     if (visibleTags.length) {
       const tagsEl = card.createDiv({ cls: "memoria-card-tags" });
       for (const t2 of visibleTags) {
         tagsEl.createSpan({ cls: "memoria-tag-pill", text: `#${t2}` }).addEventListener("click", () => {
           this.filter.tag = t2;
           this.filter.preset = "all";
+          this.activeSavedFilterId = null;
           this.pageLimit = this.getInitialPageLimit();
           this.renderAll();
         });
@@ -3400,7 +4119,7 @@ ${indent}${marker}`);
           await this.store.editMemo(memo, newContent);
         } catch (err) {
           console.error("[Memoria] \u4EFB\u52A1\u52FE\u9009\u5931\u8D25:", err);
-          new import_obsidian7.Notice("\u52FE\u9009\u5931\u8D25\uFF1A" + (err instanceof Error ? err.message : String(err)));
+          new import_obsidian7.Notice(t("notice.checkFailed", { msg: err instanceof Error ? err.message : String(err) }));
         }
       });
     });
@@ -3415,40 +4134,105 @@ ${indent}${marker}`);
     });
   }
   stripTags(content) {
-    const tags = [];
-    const text = content.replace(/#([A-Za-z0-9_一-鿿][A-Za-z0-9_一-鿿/]*)/g, (_, tag) => {
-      if (!tags.includes(tag)) tags.push(tag);
-      return "";
-    }).split("\n").map((l) => l.replace(/\s+$/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    return { text, tags };
+    return stripDisplayTags(content);
   }
   showMemoMenu(e, memo) {
     const menu = new import_obsidian7.Menu();
-    menu.addItem((i) => i.setTitle(memo.isPinned ? "\u53D6\u6D88\u7F6E\u9876" : "\u7F6E\u9876").setIcon(memo.isPinned ? "pin-off" : "pin").onClick(async () => {
+    menu.addItem((i) => i.setTitle(memo.isPinned ? t("card.unpin") : t("card.pin")).setIcon(memo.isPinned ? "pin-off" : "pin").onClick(async () => {
       await this.store.togglePinned(memo);
-      new import_obsidian7.Notice(memo.isPinned ? "\u5DF2\u53D6\u6D88\u7F6E\u9876" : "\u2713 \u5DF2\u7F6E\u9876");
+      new import_obsidian7.Notice(memo.isPinned ? t("notice.unpinned") : t("notice.pinned"));
     }));
-    menu.addItem((i) => i.setTitle(memo.isStarred ? "\u53D6\u6D88\u6536\u85CF" : "\u6536\u85CF").setIcon(memo.isStarred ? "star-off" : "star").onClick(async () => {
+    menu.addItem((i) => i.setTitle(memo.isStarred ? t("card.unstar") : t("card.star")).setIcon(memo.isStarred ? "star-off" : "star").onClick(async () => {
       await this.store.toggleStarred(memo);
-      new import_obsidian7.Notice(memo.isStarred ? "\u5DF2\u53D6\u6D88\u6536\u85CF" : "\u2713 \u5DF2\u6536\u85CF");
+      new import_obsidian7.Notice(memo.isStarred ? t("notice.unstarred") : t("notice.starred"));
     }));
     menu.addSeparator();
-    menu.addItem((i) => i.setTitle("\u7F16\u8F91").setIcon("pencil").onClick(() => this.enterEditMode(memo)));
-    menu.addItem((i) => i.setTitle("\u5F15\u7528").setIcon("quote").onClick(() => this.quoteMemo(memo)));
-    menu.addItem((i) => i.setTitle("\u6253\u5F00\u539F\u6587").setIcon("file-text").onClick(() => this.openInFile(memo)));
-    menu.addItem((i) => i.setTitle("\u590D\u5236\u539F\u6587").setIcon("copy").onClick(async () => {
+    menu.addItem((i) => i.setTitle(t("card.edit")).setIcon("pencil").onClick(() => this.enterEditMode(memo)));
+    menu.addItem((i) => i.setTitle(t("card.quote")).setIcon("quote").onClick(() => this.quoteMemo(memo)));
+    menu.addItem((i) => i.setTitle(t("card.promote")).setIcon("file-plus").onClick(() => this.showPromoteMemoModal(memo)));
+    menu.addItem((i) => i.setTitle(t("card.openSource")).setIcon("file-text").onClick(() => this.openInFile(memo)));
+    menu.addItem((i) => i.setTitle(t("card.copySource")).setIcon("copy").onClick(async () => {
       await navigator.clipboard.writeText(memo.content);
-      new import_obsidian7.Notice("\u5DF2\u590D\u5236");
+      new import_obsidian7.Notice(t("notice.copied"));
     }));
     menu.addSeparator();
-    menu.addItem((i) => i.setTitle("\u5220\u9664").setIcon("trash").onClick(async () => {
-      if (await this.confirmAsync("\u786E\u5B9A\u5220\u9664\u8FD9\u6761\u7B14\u8BB0\u5417\uFF1F")) {
+    menu.addItem((i) => i.setTitle(t("card.delete")).setIcon("trash").onClick(async () => {
+      if (await this.confirmAsync(t("notice.confirmDelete"))) {
         await this.store.deleteMemo(memo);
-        new import_obsidian7.Notice("\u5DF2\u5220\u9664");
+        new import_obsidian7.Notice(t("notice.deleted"));
         this.restoreInputFocus();
       }
     }));
     menu.showAtMouseEvent(e);
+  }
+  /** 2026-06-03: 转正式笔记只创建新文件，不自动删除原 memo，降低整理功能的误操作风险 */
+  showPromoteMemoModal(memo) {
+    const backdrop = document.body.createDiv({ cls: "memoria-modal-backdrop" });
+    const modal = backdrop.createDiv({ cls: "memoria-modal memoria-text-modal" });
+    modal.createDiv({ cls: "memoria-modal-title", text: t("card.promote") });
+    const titleLabel = modal.createDiv({ cls: "memoria-modal-label", text: t("promote.title") });
+    const titleInput = modal.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: { type: "text" },
+      value: this.suggestMemoTitle(memo)
+    });
+    titleLabel.setAttr("for", "memoria-promote-title");
+    titleInput.id = "memoria-promote-title";
+    const folderLabel = modal.createDiv({ cls: "memoria-modal-label", text: t("promote.folder") });
+    const folderInput = modal.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: { type: "text" },
+      value: this.settings.promoteFolder || "Memoria/notes"
+    });
+    folderLabel.setAttr("for", "memoria-promote-folder");
+    folderInput.id = "memoria-promote-folder";
+    modal.createDiv({ cls: "memoria-modal-hint", text: t("promote.hint") });
+    const btns = modal.createDiv({ cls: "memoria-modal-btns" });
+    const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+    const createBtn = btns.createEl("button", { text: t("promote.create"), cls: "mod-cta" });
+    const close = () => backdrop.remove();
+    const submit = async () => {
+      const title = titleInput.value.trim();
+      const folder = folderInput.value.trim() || "Memoria/notes";
+      if (!title) {
+        new import_obsidian7.Notice(t("promote.requireTitle"));
+        return;
+      }
+      try {
+        this.settings.promoteFolder = folder;
+        await this.saveSettings();
+        const path = await this.store.promoteMemoToNote(memo, title, folder);
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (file instanceof import_obsidian7.TFile) await this.app.workspace.getLeaf("tab").openFile(file);
+        new import_obsidian7.Notice(t("promote.created", { path }));
+        close();
+      } catch (e) {
+        new import_obsidian7.Notice(t("promote.failed", { msg: e instanceof Error ? e.message : String(e) }));
+      }
+    };
+    cancelBtn.addEventListener("click", close);
+    createBtn.addEventListener("click", submit);
+    titleInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+    });
+    folderInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+    });
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) close();
+    });
+    setTimeout(() => {
+      titleInput.focus();
+      titleInput.select();
+    }, 20);
+  }
+  suggestMemoTitle(memo) {
+    var _a;
+    const { text } = this.stripTags(memo.content);
+    const first = (_a = text.split("\n").map((l) => l.trim()).find(Boolean)) != null ? _a : "Memoria memo";
+    return first.replace(/^[-*]\s+/, "").replace(/^#+\s+/, "").replace(/^>\s*/, "").replace(/!\[\[[^\]]+\]\]/g, "").replace(/!\[[^\]]*\]\([^)]+\)/g, "").trim().slice(0, 40) || "Memoria memo";
   }
   async showExportMenu(e) {
     const menu = new import_obsidian7.Menu();
@@ -3478,21 +4262,8 @@ ${indent}${marker}`);
     menu.showAtMouseEvent(e);
   }
   describeFilterOnly() {
-    var _a;
     const parts = [];
-    const presetLabels = {
-      today: t("sidebar.today"),
-      week: t("sidebar.week"),
-      random: t("sidebar.random"),
-      "on-this-day": t("list.presetOnThisDay"),
-      todo: "\u{1F4CB} " + t("sidebar.todo"),
-      "no-tag": t("sidebar.noTag"),
-      "with-image": t("sidebar.withImage"),
-      "with-link": t("sidebar.withLink"),
-      pinned: t("list.presetPinned"),
-      starred: t("list.presetStarred")
-    };
-    if (this.filter.preset !== "all") parts.push((_a = presetLabels[this.filter.preset]) != null ? _a : this.filter.preset);
+    if (this.filter.preset !== "all") parts.push(this.getPresetLabel(this.filter.preset));
     if (this.filter.year) parts.push(this.filter.year);
     if (this.filter.date) parts.push(this.filter.date);
     if (this.filter.tag) parts.push(`#${this.filter.tag}`);
@@ -3505,8 +4276,8 @@ ${indent}${marker}`);
       const modal = backdrop.createDiv({ cls: "memoria-modal memoria-confirm" });
       modal.createDiv({ cls: "memoria-modal-title", text: message });
       const btns = modal.createDiv({ cls: "memoria-modal-btns" });
-      const cancelBtn = btns.createEl("button", { text: "\u53D6\u6D88" });
-      const confirmBtn = btns.createEl("button", { text: "\u786E\u8BA4\u5220\u9664", cls: "mod-warning" });
+      const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+      const confirmBtn = btns.createEl("button", { text: t("notice.confirmDeleteOk"), cls: "mod-warning" });
       const done = (result) => {
         backdrop.remove();
         document.removeEventListener("keydown", onKey, true);
@@ -3562,7 +4333,7 @@ ${body}
     }
     this.inputEl.focus();
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
-    new import_obsidian7.Notice("\u5DF2\u5F15\u7528\uFF0C\u7EE7\u7EED\u8865\u5145\u60F3\u6CD5\u5427");
+    new import_obsidian7.Notice(t("notice.quoted"));
   }
 };
 _MemoriaView.DRAFT_KEY_PREFIX = "memoria:input-draft";
@@ -3608,7 +4379,7 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
     return VIEW_TYPE_STATS;
   }
   getDisplayText() {
-    return "Memoria \u6570\u636E\u62A5\u544A";
+    return t("stats.viewTitle");
   }
   getIcon() {
     return "bar-chart-3";
@@ -3651,7 +4422,7 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
     const oldest = [...this.memos].sort((a, b) => a.datetime.getTime() - b.datetime.getTime())[0];
     const spanDays = Math.floor((Date.now() - oldest.datetime.getTime()) / (1e3 * 60 * 60 * 24)) + 1;
     this.renderBigNum(section, this.memos.length, t("stats.memos"));
-    this.renderBigNum(section, charCount, "\u5B57");
+    this.renderBigNum(section, charCount, t("stats.chars"));
     this.renderBigNum(section, activeDays, t("stats.days"));
     this.renderBigNum(section, spanDays, t("stats.dailyGoal"));
   }
@@ -3663,27 +4434,27 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
   renderYearHeatmap(parent) {
     const section = parent.createDiv({ cls: "mstat-section" });
     const titleRow = section.createDiv({ cls: "mstat-yh-title-row" });
-    titleRow.createDiv({ cls: "mstat-title", text: "\u{1F525} \u5168\u5E74\u6D3B\u8DC3\u5EA6" });
+    titleRow.createDiv({ cls: "mstat-title", text: t("stats.yearHeatmap") });
     const yearNav = titleRow.createDiv({ cls: "mstat-yh-year-nav" });
-    const prevBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": "\u4E0A\u4E00\u5E74" } });
+    const prevBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": t("stats.prevYear") } });
     (0, import_obsidian8.setIcon)(prevBtn, "chevron-left");
     const yearBtn = yearNav.createEl("button", { cls: "mstat-yh-year-btn" });
-    const nextBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": "\u4E0B\u4E00\u5E74" } });
+    const nextBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": t("stats.nextYear") } });
     (0, import_obsidian8.setIcon)(nextBtn, "chevron-right");
     let currentYear = (/* @__PURE__ */ new Date()).getFullYear();
-    yearBtn.setText(`${currentYear} \u5E74`);
+    yearBtn.setText(t("stats.yearLabel", { year: currentYear }));
     const heatmapWrap = section.createDiv({ cls: "mstat-yh-wrap" });
     const monthLabels = section.createDiv({ cls: "mstat-yh-monthlabels" });
     const monthlyTitleSection = parent.createDiv({ cls: "mstat-section mstat-monthly-title" });
     const monthlyTitleRow = monthlyTitleSection.createDiv({ cls: "mstat-title-row" });
-    monthlyTitleRow.createDiv({ cls: "mstat-title", text: "\u{1F4C5} \u6708\u5EA6\u5206\u5E03" });
+    monthlyTitleRow.createDiv({ cls: "mstat-title", text: t("stats.monthlyTitle") });
     const monthlySubtitle = monthlyTitleRow.createDiv({ cls: "mstat-subtitle" });
     const monthlyWrap = parent.createDiv({ cls: "mstat-monthly-wrap" });
     const drawYear = (year) => {
       var _a, _b;
       heatmapWrap.empty();
       monthLabels.empty();
-      yearBtn.setText(`${year} \u5E74`);
+      yearBtn.setText(t("stats.yearLabel", { year }));
       const dateCounts = /* @__PURE__ */ new Map();
       for (const m of this.memos) {
         if (m.date.startsWith(`${year}-`)) dateCounts.set(m.date, ((_a = dateCounts.get(m.date)) != null ? _a : 0) + 1);
@@ -3713,7 +4484,7 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
         const { month, week } = monthsSeen[i];
         const next = monthsSeen[i + 1];
         if ((next ? next.week - week : totalCols - week) < 2) continue;
-        const lbl = monthLabels.createDiv({ cls: "mstat-yh-mlabel", text: `${month + 1}\u6708` });
+        const lbl = monthLabels.createDiv({ cls: "mstat-yh-mlabel", text: t("stats.monthLabel", { month: month + 1 }) });
         lbl.style.left = `${week * (CELL_W + GAP)}px`;
       }
       for (let col = 0; col < totalCols; col++) {
@@ -3725,13 +4496,13 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
           const inYear = d >= jan1 && d <= lastDay;
           const count = (_b = dateCounts.get(dateStr)) != null ? _b : 0;
           const level = inYear ? count === 0 ? 0 : count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4 : -1;
-          const cell = colEl.createDiv({ cls: `mstat-yh-cell level-${level}`, attr: { title: inYear ? `${dateStr}  ${count} \u6761` : "" } });
+          const cell = colEl.createDiv({ cls: `mstat-yh-cell level-${level}`, attr: { title: inYear ? t("stats.dayCount", { date: dateStr, count }) : "" } });
           if (level === -1) cell.style.visibility = "hidden";
         }
       }
       this.renderMonthlyForYear(monthlyWrap, year);
       const yearTotal = this.memos.filter((m) => m.date.startsWith(`${year}-`)).length;
-      monthlySubtitle.setText(`${year} \u5E74\u5171 ${yearTotal} \u6761`);
+      monthlySubtitle.setText(t("stats.yearTotal", { year, total: yearTotal }));
     };
     const allYears = [...new Set(this.memos.map((m) => parseInt(m.date.substring(0, 4))))].sort();
     const navigate = (delta) => {
@@ -3745,15 +4516,15 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
     yearBtn.addEventListener("click", () => navigate(1));
     drawYear(currentYear);
     const legend = section.createDiv({ cls: "mstat-yh-legend" });
-    legend.createSpan({ text: "\u5C11 " });
+    legend.createSpan({ text: t("stats.low") });
     for (let i = 0; i <= 4; i++) legend.createDiv({ cls: `mstat-yh-cell level-${i}` });
-    legend.createSpan({ text: " \u591A" });
+    legend.createSpan({ text: t("stats.high") });
   }
   renderMonthlyForYear(parent, year) {
     parent.empty();
     const months = Array.from({ length: 12 }, (_, i) => ({
       key: `${year}-${pad3(i + 1)}`,
-      label: `${i + 1}\u6708`,
+      label: t("stats.monthLabel", { month: i + 1 }),
       count: 0
     }));
     for (const m of this.memos) {
@@ -3769,7 +4540,7 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
         cls: "mstat-bar" + (mo.count === maxCount && mo.count > 0 ? " is-max" : "")
       });
       bar.style.height = `${mo.count / maxCount * 100}%`;
-      bar.setAttr("title", `${mo.key}: ${mo.count} \u6761`);
+      bar.setAttr("title", t("stats.monthBarTitle", { key: mo.key, count: mo.count }));
       col.createDiv({ cls: "mstat-bar-num", text: mo.count > 0 ? String(mo.count) : "" });
       col.createDiv({ cls: "mstat-bar-label", text: mo.label });
     }
@@ -3780,14 +4551,14 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
     for (const m of this.memos) for (const t2 of m.tags) if (!RESERVED_TAGS.has(t2)) tagMap.set(t2, ((_a = tagMap.get(t2)) != null ? _a : 0) + 1);
     if (tagMap.size === 0) return;
     const section = parent.createDiv({ cls: "mstat-section" });
-    section.createDiv({ cls: "mstat-title", text: "\u2601\uFE0F \u6807\u7B7E\u4E91" });
+    section.createDiv({ cls: "mstat-title", text: t("stats.tagCloud") });
     const sorted = [...tagMap.entries()].sort((a, b) => b[1] - a[1]);
     const maxCnt = sorted[0][1];
     const minCnt = sorted[sorted.length - 1][1];
     const cloud = section.createDiv({ cls: "mstat-cloud" });
     for (const [tag, cnt] of sorted) {
       const ratio = maxCnt === minCnt ? 1 : (cnt - minCnt) / (maxCnt - minCnt);
-      const span = cloud.createSpan({ cls: "mstat-cloud-tag", text: `#${tag}`, attr: { title: `${cnt} \u6761` } });
+      const span = cloud.createSpan({ cls: "mstat-cloud-tag", text: `#${tag}`, attr: { title: t("stats.tagCountTitle", { count: cnt }) } });
       span.style.fontSize = `${12 + ratio * 10}px`;
       span.style.opacity = String(0.55 + ratio * 0.45);
     }
@@ -3795,12 +4566,12 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
   renderTopTags(parent) {
     var _a;
     const section = parent.createDiv({ cls: "mstat-section" });
-    section.createDiv({ cls: "mstat-title", text: "\u{1F3F7}\uFE0F \u6700\u5E38\u7528\u6807\u7B7E Top 10" });
+    section.createDiv({ cls: "mstat-title", text: t("stats.topTags") });
     const tagMap = /* @__PURE__ */ new Map();
     for (const m of this.memos) for (const t2 of m.tags) if (!RESERVED_TAGS.has(t2)) tagMap.set(t2, ((_a = tagMap.get(t2)) != null ? _a : 0) + 1);
     const top10 = [...tagMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (top10.length === 0) {
-      section.createDiv({ cls: "mstat-empty", text: "\u6682\u65E0\u6807\u7B7E" });
+      section.createDiv({ cls: "mstat-empty", text: t("stats.noTags") });
       return;
     }
     const maxCnt = top10[0][1];
@@ -3817,8 +4588,8 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
   renderHourlyChart(parent) {
     const section = parent.createDiv({ cls: "mstat-section" });
     const titleRow = section.createDiv({ cls: "mstat-title-row" });
-    titleRow.createDiv({ cls: "mstat-title", text: "\u23F0 \u4E00\u5929\u4E2D\u4F60\u4EC0\u4E48\u65F6\u5019\u5199\u5F97\u6700\u591A" });
-    titleRow.createDiv({ cls: "mstat-subtitle", text: `\u57FA\u4E8E ${this.memos.length} \u6761\u5386\u53F2\u7B14\u8BB0\u7D2F\u8BA1` });
+    titleRow.createDiv({ cls: "mstat-title", text: t("stats.hourlyTitle") });
+    titleRow.createDiv({ cls: "mstat-subtitle", text: t("stats.hourlySub", { n: this.memos.length }) });
     const hourly = new Array(24).fill(0);
     for (const m of this.memos) hourly[m.datetime.getHours()]++;
     const maxVal = Math.max(1, ...hourly);
@@ -3829,7 +4600,7 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
         cls: "mstat-bar" + (hourly[h] === maxVal && hourly[h] > 0 ? " is-max" : "") + (hourly[h] === 0 ? " is-empty" : "")
       });
       bar.style.height = hourly[h] === 0 ? "2px" : `${hourly[h] / maxVal * 100}%`;
-      bar.setAttr("title", `${pad3(h)}:00 \u2014 ${hourly[h]} \u6761`);
+      bar.setAttr("title", t("stats.hourTitle", { hour: pad3(h), count: hourly[h] }));
       col.createDiv({ cls: "mstat-bar-label", text: pad3(h) });
     }
     const peakHour = hourly.indexOf(maxVal);
@@ -3838,7 +4609,7 @@ var MemoriaStatsView = class extends import_obsidian8.ItemView {
   renderHighlights(parent) {
     var _a;
     const section = parent.createDiv({ cls: "mstat-section" });
-    section.createDiv({ cls: "mstat-title", text: "\u{1F31F} \u6709\u8DA3\u7684\u53D1\u73B0" });
+    section.createDiv({ cls: "mstat-title", text: t("stats.highlights") });
     const list = section.createDiv({ cls: "mstat-fact-list" });
     const dateCounts = /* @__PURE__ */ new Map();
     for (const m of this.memos) dateCounts.set(m.date, ((_a = dateCounts.get(m.date)) != null ? _a : 0) + 1);
@@ -3908,7 +4679,7 @@ function pad3(n) {
 // src/year-view.ts
 var import_obsidian9 = require("obsidian");
 var MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-var WEEKDAY_LABELS = ["\u65E5", "\u4E00", "\u4E8C", "\u4E09", "\u56DB", "\u4E94", "\u516D"];
+var WEEKDAY_KEYS2 = ["calendar.wd.0", "calendar.wd.1", "calendar.wd.2", "calendar.wd.3", "calendar.wd.4", "calendar.wd.5", "calendar.wd.6"];
 var MemoriaYearView = class extends import_obsidian9.ItemView {
   constructor(leaf, store) {
     super(leaf);
@@ -3921,7 +4692,7 @@ var MemoriaYearView = class extends import_obsidian9.ItemView {
     return VIEW_TYPE_YEAR;
   }
   getDisplayText() {
-    return "Memoria \u5E74\u5EA6\u5168\u666F";
+    return t("year.viewTitle");
   }
   getIcon() {
     return "calendar-days";
@@ -3946,10 +4717,10 @@ var MemoriaYearView = class extends import_obsidian9.ItemView {
     const header = el.createDiv({ cls: "memoria-year-header" });
     header.createDiv({ cls: "memoria-year-title", text: String(this.year) });
     const nav = header.createDiv({ cls: "memoria-year-nav" });
-    const prevBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": "\u4E0A\u4E00\u5E74" } });
+    const prevBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": t("year.prevYear") } });
     (0, import_obsidian9.setIcon)(prevBtn, "chevron-left");
-    const todayBtn = nav.createEl("button", { cls: "memoria-year-today-btn", text: "\u4ECA\u5E74" });
-    const nextBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": "\u4E0B\u4E00\u5E74" } });
+    const todayBtn = nav.createEl("button", { cls: "memoria-year-today-btn", text: t("year.today") });
+    const nextBtn = nav.createEl("button", { cls: "memoria-year-nav-btn", attr: { "aria-label": t("year.nextYear") } });
     (0, import_obsidian9.setIcon)(nextBtn, "chevron-right");
     prevBtn.addEventListener("click", () => {
       this.year--;
@@ -3976,7 +4747,7 @@ var MemoriaYearView = class extends import_obsidian9.ItemView {
       const monthEl = grid.createDiv({ cls: "memoria-year-month" });
       monthEl.createDiv({ cls: "memoria-year-month-label", text: MONTH_LABELS[month] });
       const weekHead = monthEl.createDiv({ cls: "memoria-year-weekhead" });
-      for (const wd of WEEKDAY_LABELS) weekHead.createDiv({ cls: "memoria-year-wday", text: wd });
+      for (let w = 0; w < WEEKDAY_KEYS2.length; w++) weekHead.createDiv({ cls: "memoria-year-wday", text: t(WEEKDAY_KEYS2[w]) });
       const daysGrid = monthEl.createDiv({ cls: "memoria-year-grid-days" });
       const firstDay = new Date(this.year, month, 1);
       const daysInMonth = new Date(this.year, month + 1, 0).getDate();
@@ -3997,7 +4768,7 @@ var MemoriaYearView = class extends import_obsidian9.ItemView {
         daysGrid.createDiv({
           cls,
           text: String(d),
-          attr: { title: count > 0 ? `${dateStr}  ${count} \u6761` : dateStr }
+          attr: { title: count > 0 ? t("stats.dayCount", { date: dateStr, count }) : dateStr }
         });
       }
       const remaining = 7 - (startOffset + daysInMonth) % 7;
@@ -4013,18 +4784,330 @@ var MemoriaYearView = class extends import_obsidian9.ItemView {
     const activeDays = new Set(this.memos.map((m) => m.date)).size;
     const yearMemos = this.memos.filter((m) => m.date.startsWith(String(this.year)));
     const foot = el.createDiv({ cls: "memoria-year-foot" });
-    foot.createSpan({ cls: "memoria-year-foot-item", text: `${yearMemos.length} \u6761\u7B14\u8BB0` });
+    foot.createSpan({ cls: "memoria-year-foot-item", text: t("year.memos", { n: yearMemos.length }) });
     foot.createSpan({ cls: "memoria-year-foot-sep", text: "\xB7" });
-    foot.createSpan({ cls: "memoria-year-foot-item", text: `${activeDays} \u6D3B\u8DC3\u5929` });
+    foot.createSpan({ cls: "memoria-year-foot-item", text: t("year.activeDays", { n: activeDays }) });
   }
 };
 function pad4(n) {
   return n.toString().padStart(2, "0");
 }
 
-// src/settings.ts
+// src/trash-view.ts
 var import_obsidian10 = require("obsidian");
-var MemoriaSettingTab = class extends import_obsidian10.PluginSettingTab {
+var MemoriaTrashView = class extends import_obsidian10.ItemView {
+  constructor(leaf, store) {
+    super(leaf);
+    this.store = store;
+    this.items = [];
+    this.query = "";
+    this.childComponent = new import_obsidian10.Component();
+  }
+  getViewType() {
+    return VIEW_TYPE_TRASH;
+  }
+  getDisplayText() {
+    return t("trash.viewTitle");
+  }
+  getIcon() {
+    return "trash-2";
+  }
+  async onOpen() {
+    this.contentEl.addClass("memoria-root", "memoria-trash-view");
+    await this.reload();
+  }
+  async onClose() {
+    this.childComponent.unload();
+  }
+  /** 2026-06-03: 回收站视图每次操作后重新解析 _trash.md，避免行号 range 因删除/恢复后失效 */
+  async reload() {
+    try {
+      this.items = await this.store.getTrashItems();
+      this.render();
+    } catch (e) {
+      console.error("[Memoria] \u56DE\u6536\u7AD9\u8BFB\u53D6\u5931\u8D25:", e);
+      new import_obsidian10.Notice(t("trash.loadFailed", { msg: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+  render() {
+    const el = this.contentEl;
+    el.empty();
+    this.childComponent.unload();
+    this.childComponent = new import_obsidian10.Component();
+    this.childComponent.load();
+    const header = el.createDiv({ cls: "memoria-trash-header" });
+    const title = header.createDiv({ cls: "memoria-trash-title" });
+    (0, import_obsidian10.setIcon)(title.createSpan({ cls: "memoria-trash-title-icon" }), "trash-2");
+    title.createSpan({ text: t("trash.viewTitle") });
+    const actions = header.createDiv({ cls: "memoria-trash-actions" });
+    const refreshBtn = actions.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("common.refresh") } });
+    (0, import_obsidian10.setIcon)(refreshBtn, "refresh-cw");
+    refreshBtn.addEventListener("click", () => this.reload());
+    const openBtn = actions.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("trash.openFile") } });
+    (0, import_obsidian10.setIcon)(openBtn, "file-text");
+    openBtn.addEventListener("click", () => this.openTrashFile());
+    const clearBtn = actions.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("trash.clear") } });
+    (0, import_obsidian10.setIcon)(clearBtn, "trash");
+    clearBtn.addEventListener("click", async () => {
+      if (!this.items.length) return;
+      if (!confirm(t("trash.clearConfirm", { n: this.items.length }))) return;
+      try {
+        await this.store.clearTrash();
+        new import_obsidian10.Notice(t("trash.cleared"));
+        await this.reload();
+      } catch (e) {
+        new import_obsidian10.Notice(t("trash.clearFailed", { msg: e instanceof Error ? e.message : String(e) }));
+      }
+    });
+    const searchWrap = el.createDiv({ cls: "memoria-trash-search-wrap" });
+    (0, import_obsidian10.setIcon)(searchWrap.createSpan({ cls: "memoria-search-icon" }), "search");
+    const search = searchWrap.createEl("input", {
+      cls: "memoria-trash-search",
+      attr: { placeholder: t("trash.searchPlaceholder"), type: "text" },
+      value: this.query
+    });
+    search.addEventListener("input", () => {
+      this.query = search.value.trim();
+      this.renderList();
+    });
+    el.createDiv({ cls: "memoria-trash-list" });
+    this.renderList();
+  }
+  renderList() {
+    const list = this.contentEl.querySelector(".memoria-trash-list");
+    if (!list) return;
+    list.empty();
+    const filtered = this.getFilteredItems();
+    const meta = list.createDiv({ cls: "memoria-list-meta" });
+    meta.createDiv({ cls: "memoria-list-meta-left", text: t("trash.total", { n: filtered.length }) });
+    if (!filtered.length) {
+      const empty = list.createDiv({ cls: "memoria-empty" });
+      empty.createDiv({ cls: "memoria-empty-text", text: this.items.length ? t("trash.noMatch") : t("trash.empty") });
+      empty.createDiv({ cls: "memoria-empty-sub", text: t("trash.emptySub") });
+      return;
+    }
+    for (const item of filtered) this.renderTrashCard(list, item);
+  }
+  getFilteredItems() {
+    if (!this.query) return this.items;
+    const q = this.query.toLowerCase();
+    return this.items.filter(
+      (item) => item.content.toLowerCase().includes(q) || item.sourceFile.toLowerCase().includes(q) || item.deletedAt.toLowerCase().includes(q) || item.originalDate.includes(q) || item.originalTime.includes(q)
+    );
+  }
+  renderTrashCard(parent, item) {
+    const card = parent.createDiv({ cls: "memoria-trash-card" });
+    const head = card.createDiv({ cls: "memoria-trash-card-head" });
+    const meta = head.createDiv({ cls: "memoria-trash-card-meta" });
+    meta.createDiv({ cls: "memoria-trash-card-time", text: t("trash.originalTime", { date: item.originalDate, time: item.originalTime }) });
+    meta.createDiv({ cls: "memoria-trash-card-source", text: t("trash.deletedAt", { deletedAt: item.deletedAt, source: item.sourceFile }) });
+    const actions = head.createDiv({ cls: "memoria-trash-card-actions" });
+    const restoreBtn = actions.createEl("button", { cls: "memoria-small-btn" });
+    (0, import_obsidian10.setIcon)(restoreBtn.createSpan(), "rotate-ccw");
+    restoreBtn.createSpan({ text: t("trash.restore") });
+    restoreBtn.addEventListener("click", async () => {
+      try {
+        await this.store.restoreTrashItem(item.id);
+        new import_obsidian10.Notice(t("trash.restored"));
+        await this.reload();
+      } catch (e) {
+        new import_obsidian10.Notice(t("trash.restoreFailed", { msg: e instanceof Error ? e.message : String(e) }));
+      }
+    });
+    const deleteBtn = actions.createEl("button", { cls: "memoria-small-btn is-danger" });
+    (0, import_obsidian10.setIcon)(deleteBtn.createSpan(), "trash");
+    deleteBtn.createSpan({ text: t("trash.purge") });
+    deleteBtn.addEventListener("click", async () => {
+      if (!confirm(t("trash.purgeConfirm"))) return;
+      try {
+        await this.store.removeTrashItem(item.id);
+        new import_obsidian10.Notice(t("trash.purged"));
+        await this.reload();
+      } catch (e) {
+        new import_obsidian10.Notice(t("trash.deleteFailed", { msg: e instanceof Error ? e.message : String(e) }));
+      }
+    });
+    const body = card.createDiv({ cls: "memoria-card-body memoria-trash-card-body" });
+    import_obsidian10.MarkdownRenderer.render(this.app, normalizeForRender(item.content), body, item.sourceFile, this.childComponent);
+  }
+  async openTrashFile() {
+    const file = this.app.vault.getAbstractFileByPath(this.store.getTrashFilePath());
+    if (file instanceof import_obsidian10.TFile) await this.app.workspace.getLeaf(false).openFile(file);
+    else new import_obsidian10.Notice(t("trash.fileMissing"));
+  }
+};
+
+// src/tag-tools-view.ts
+var import_obsidian11 = require("obsidian");
+var MemoriaTagToolsView = class extends import_obsidian11.ItemView {
+  constructor(leaf, store) {
+    super(leaf);
+    this.store = store;
+    this.tags = [];
+    this.query = "";
+  }
+  getViewType() {
+    return VIEW_TYPE_TAG_TOOLS;
+  }
+  getDisplayText() {
+    return t("tagTools.viewTitle");
+  }
+  getIcon() {
+    return "tags";
+  }
+  async onOpen() {
+    this.contentEl.addClass("memoria-root", "memoria-tag-tools-view");
+    await this.reload();
+  }
+  async onClose() {
+  }
+  /** 2026-06-03: 标签整理视图每次进入先刷新 store，避免基于旧缓存批量改写标签 */
+  async reload() {
+    try {
+      await this.store.reloadAll();
+      this.tags = this.store.getTagStats();
+      this.render();
+    } catch (e) {
+      console.error("[Memoria] \u6807\u7B7E\u6574\u7406\u52A0\u8F7D\u5931\u8D25:", e);
+      new import_obsidian11.Notice(t("tagTools.loadFailed", { msg: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+  render() {
+    const el = this.contentEl;
+    el.empty();
+    const header = el.createDiv({ cls: "memoria-tag-tools-header" });
+    const title = header.createDiv({ cls: "memoria-tag-tools-title" });
+    (0, import_obsidian11.setIcon)(title.createSpan({ cls: "memoria-tag-tools-title-icon" }), "tags");
+    title.createSpan({ text: t("tagTools.viewTitle") });
+    const actions = header.createDiv({ cls: "memoria-tag-tools-actions" });
+    const refreshBtn = actions.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("common.refresh") } });
+    (0, import_obsidian11.setIcon)(refreshBtn, "refresh-cw");
+    refreshBtn.addEventListener("click", () => this.reload());
+    const summary = el.createDiv({ cls: "memoria-tag-tools-summary" });
+    summary.createDiv({ cls: "memoria-tag-tools-stat", text: t("tagTools.tagCount", { n: this.tags.length }) });
+    summary.createDiv({
+      cls: "memoria-tag-tools-stat",
+      text: t("tagTools.lowFreqCount", { n: this.tags.filter((t2) => t2.memoCount <= 1).length })
+    });
+    const searchWrap = el.createDiv({ cls: "memoria-tag-tools-search-wrap" });
+    (0, import_obsidian11.setIcon)(searchWrap.createSpan({ cls: "memoria-search-icon" }), "search");
+    const search = searchWrap.createEl("input", {
+      cls: "memoria-tag-tools-search",
+      attr: { placeholder: t("tagTools.searchPlaceholder"), type: "text" },
+      value: this.query
+    });
+    search.addEventListener("input", () => {
+      this.query = search.value.trim();
+      this.renderList();
+    });
+    el.createDiv({ cls: "memoria-tag-tools-list" });
+    this.renderList();
+  }
+  renderList() {
+    const list = this.contentEl.querySelector(".memoria-tag-tools-list");
+    if (!list) return;
+    list.empty();
+    const filtered = this.getFilteredTags();
+    const meta = list.createDiv({ cls: "memoria-list-meta" });
+    meta.createDiv({ cls: "memoria-list-meta-left", text: t("tagTools.total", { n: filtered.length }) });
+    if (!filtered.length) {
+      const empty = list.createDiv({ cls: "memoria-empty" });
+      empty.createDiv({ cls: "memoria-empty-text", text: this.tags.length ? t("tagTools.noMatch") : t("tagTools.empty") });
+      empty.createDiv({ cls: "memoria-empty-sub", text: t("tagTools.emptySub") });
+      return;
+    }
+    for (const tag of filtered) this.renderTagRow(list, tag);
+  }
+  getFilteredTags() {
+    if (!this.query) return this.tags;
+    const q = this.query.replace(/^#/, "").toLowerCase();
+    return this.tags.filter((tag) => tag.name.toLowerCase().includes(q));
+  }
+  renderTagRow(parent, tag) {
+    const row = parent.createDiv({ cls: "memoria-tag-tool-row" });
+    const info = row.createDiv({ cls: "memoria-tag-tool-info" });
+    info.createDiv({ cls: "memoria-tag-tool-name", text: `#${tag.name}` });
+    info.createDiv({ cls: "memoria-tag-tool-meta", text: t("tagTools.memoCount", { n: tag.memoCount }) });
+    const actions = row.createDiv({ cls: "memoria-tag-tool-actions" });
+    const renameBtn = actions.createEl("button", { cls: "memoria-small-btn" });
+    (0, import_obsidian11.setIcon)(renameBtn.createSpan(), "replace");
+    renameBtn.createSpan({ text: t("tagTools.rename") });
+    renameBtn.addEventListener("click", () => this.showRenameModal(tag));
+    const removeBtn = actions.createEl("button", { cls: "memoria-small-btn is-danger" });
+    (0, import_obsidian11.setIcon)(removeBtn.createSpan(), "tag-x");
+    removeBtn.createSpan({ text: t("tagTools.remove") });
+    removeBtn.addEventListener("click", () => this.confirmRemoveTag(tag));
+  }
+  showRenameModal(tag) {
+    const backdrop = document.body.createDiv({ cls: "memoria-modal-backdrop" });
+    const modal = backdrop.createDiv({ cls: "memoria-modal memoria-text-modal" });
+    modal.createDiv({ cls: "memoria-modal-title", text: t("tagTools.renameTitle", { tag: tag.name }) });
+    modal.createDiv({ cls: "memoria-modal-label", text: t("tagTools.newName") });
+    const input = modal.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: { type: "text", placeholder: t("tagTools.namePlaceholder") },
+      value: tag.name
+    });
+    const affected = this.getAffectedMemoCount(tag.name);
+    modal.createDiv({
+      cls: "memoria-modal-hint",
+      text: t("tagTools.renameHint", { tag: tag.name, n: affected })
+    });
+    const btns = modal.createDiv({ cls: "memoria-modal-btns" });
+    const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+    const saveBtn = btns.createEl("button", { text: t("tagTools.execute"), cls: "mod-cta" });
+    const close = () => backdrop.remove();
+    const submit = async () => {
+      const next = input.value.trim();
+      if (!next || next === tag.name) {
+        close();
+        return;
+      }
+      if (!confirm(t("tagTools.renameConfirm", { old: tag.name, next, n: affected }))) return;
+      try {
+        const count = await this.store.renameTag(tag.name, next);
+        new import_obsidian11.Notice(t("tagTools.renamed", { n: count }));
+        close();
+        await this.reload();
+      } catch (e) {
+        new import_obsidian11.Notice(t("tagTools.updateFailed", { msg: e instanceof Error ? e.message : String(e) }));
+      }
+    };
+    cancelBtn.addEventListener("click", close);
+    saveBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+    });
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) close();
+    });
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 20);
+  }
+  async confirmRemoveTag(tag) {
+    const affected = this.getAffectedMemoCount(tag.name);
+    if (!confirm(t("tagTools.removeConfirm", { n: affected, tag: tag.name }))) return;
+    try {
+      const count = await this.store.removeTag(tag.name);
+      new import_obsidian11.Notice(t("tagTools.removed", { n: count }));
+      await this.reload();
+    } catch (e) {
+      new import_obsidian11.Notice(t("tagTools.removeFailed", { msg: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+  getAffectedMemoCount(tag) {
+    return this.store.getAll().filter(
+      (memo) => memo.tags.some((t2) => t2 === tag || t2.startsWith(tag + "/"))
+    ).length;
+  }
+};
+
+// src/settings.ts
+var import_obsidian12 = require("obsidian");
+var MemoriaSettingTab = class extends import_obsidian12.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -4033,65 +5116,69 @@ var MemoriaSettingTab = class extends import_obsidian10.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: t("settings.title") });
-    new import_obsidian10.Setting(containerEl).setName(t("settings.folder.name")).setDesc(t("settings.folder.desc")).addText((tx) => tx.setPlaceholder("Memoria").setValue(this.plugin.settings.folder).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.folder.name")).setDesc(t("settings.folder.desc")).addText((tx) => tx.setPlaceholder("Memoria").setValue(this.plugin.settings.folder).onChange(async (v) => {
       this.plugin.settings.folder = v.trim() || "Memoria";
       await this.plugin.saveSettings();
       await this.plugin.store.reloadAll();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.attachFolder.name")).setDesc(t("settings.attachFolder.desc")).addText((tx) => tx.setPlaceholder("Memoria/attachments").setValue(this.plugin.settings.attachmentFolder).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.attachFolder.name")).setDesc(t("settings.attachFolder.desc")).addText((tx) => tx.setPlaceholder("Memoria/attachments").setValue(this.plugin.settings.attachmentFolder).onChange(async (v) => {
       this.plugin.settings.attachmentFolder = v.trim() || "Memoria/attachments";
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.sidebarTags.name")).setDesc(t("settings.sidebarTags.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.showSidebarTags).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.promoteFolder.name")).setDesc(t("settings.promoteFolder.desc")).addText((tx) => tx.setPlaceholder("Memoria/notes").setValue(this.plugin.settings.promoteFolder).onChange(async (v) => {
+      this.plugin.settings.promoteFolder = v.trim() || "Memoria/notes";
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian12.Setting(containerEl).setName(t("settings.sidebarTags.name")).setDesc(t("settings.sidebarTags.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.showSidebarTags).onChange(async (v) => {
       this.plugin.settings.showSidebarTags = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.clearAfterSave.name")).addToggle((tg) => tg.setValue(this.plugin.settings.clearAfterSave).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.clearAfterSave.name")).addToggle((tg) => tg.setValue(this.plugin.settings.clearAfterSave).onChange(async (v) => {
       this.plugin.settings.clearAfterSave = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.pageSize.name")).setDesc(t("settings.pageSize.desc")).addSlider((sl) => sl.setLimits(10, 200, 10).setValue(this.plugin.settings.pageSize).setDynamicTooltip().onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.pageSize.name")).setDesc(t("settings.pageSize.desc")).addSlider((sl) => sl.setLimits(10, 200, 10).setValue(this.plugin.settings.pageSize).setDynamicTooltip().onChange(async (v) => {
       this.plugin.settings.pageSize = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.useTrash.name")).setDesc(t("settings.useTrash.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.useTrash).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.useTrash.name")).setDesc(t("settings.useTrash.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.useTrash).onChange(async (v) => {
       this.plugin.settings.useTrash = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.trashMax.name")).setDesc(t("settings.trashMax.desc")).addDropdown((dd) => dd.addOption("100", t("settings.trash.100")).addOption("300", t("settings.trash.300")).addOption("500", t("settings.trash.500")).addOption("1000", t("settings.trash.1000")).addOption("3000", t("settings.trash.3000")).addOption("0", t("settings.trash.0")).setValue(String(this.plugin.settings.trashMaxItems)).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.trashMax.name")).setDesc(t("settings.trashMax.desc")).addDropdown((dd) => dd.addOption("100", t("settings.trash.100")).addOption("300", t("settings.trash.300")).addOption("500", t("settings.trash.500")).addOption("1000", t("settings.trash.1000")).addOption("3000", t("settings.trash.3000")).addOption("0", t("settings.trash.0")).setValue(String(this.plugin.settings.trashMaxItems)).onChange(async (v) => {
       this.plugin.settings.trashMaxItems = parseInt(v, 10);
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.exportTheme.name")).setDesc(t("settings.exportTheme.desc")).addDropdown((dd) => dd.addOption("auto", t("settings.exportTheme.auto")).addOption("random", t("settings.exportTheme.random")).addOption("paper", t("settings.exportTheme.paper")).addOption("kraft", t("settings.exportTheme.kraft")).addOption("mint", t("settings.exportTheme.mint")).addOption("peach", t("settings.exportTheme.peach")).addOption("sky", t("settings.exportTheme.sky")).addOption("lavender", t("settings.exportTheme.lavender")).addOption("midnight", t("settings.exportTheme.midnight")).addOption("charcoal", t("settings.exportTheme.charcoal")).setValue(this.plugin.settings.exportTheme).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.exportTheme.name")).setDesc(t("settings.exportTheme.desc")).addDropdown((dd) => dd.addOption("auto", t("settings.exportTheme.auto")).addOption("random", t("settings.exportTheme.random")).addOption("paper", t("settings.exportTheme.paper")).addOption("kraft", t("settings.exportTheme.kraft")).addOption("mint", t("settings.exportTheme.mint")).addOption("peach", t("settings.exportTheme.peach")).addOption("sky", t("settings.exportTheme.sky")).addOption("lavender", t("settings.exportTheme.lavender")).addOption("midnight", t("settings.exportTheme.midnight")).addOption("charcoal", t("settings.exportTheme.charcoal")).setValue(this.plugin.settings.exportTheme).onChange(async (v) => {
       this.plugin.settings.exportTheme = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.collapse.name")).setDesc(t("settings.collapse.desc")).addDropdown((dd) => dd.addOption("0", t("settings.collapse.0")).addOption("4", t("settings.collapse.4")).addOption("6", t("settings.collapse.6")).addOption("8", t("settings.collapse.8")).addOption("12", t("settings.collapse.12")).addOption("20", t("settings.collapse.20")).setValue(String(this.plugin.settings.collapseLineLimit)).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.collapse.name")).setDesc(t("settings.collapse.desc")).addDropdown((dd) => dd.addOption("0", t("settings.collapse.0")).addOption("4", t("settings.collapse.4")).addOption("6", t("settings.collapse.6")).addOption("8", t("settings.collapse.8")).addOption("12", t("settings.collapse.12")).addOption("20", t("settings.collapse.20")).setValue(String(this.plugin.settings.collapseLineLimit)).onChange(async (v) => {
       this.plugin.settings.collapseLineLimit = parseInt(v, 10);
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.dailyGoal.name")).setDesc(t("settings.dailyGoal.desc")).addSlider((sl) => sl.setLimits(0, 30, 1).setValue(this.plugin.settings.dailyGoal).setDynamicTooltip().onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.dailyGoal.name")).setDesc(t("settings.dailyGoal.desc")).addSlider((sl) => sl.setLimits(0, 30, 1).setValue(this.plugin.settings.dailyGoal).setDynamicTooltip().onChange(async (v) => {
       this.plugin.settings.dailyGoal = v;
       await this.plugin.saveSettings();
     }));
     containerEl.createEl("h3", { text: t("settings.heading.newFeatures") });
-    new import_obsidian10.Setting(containerEl).setName(t("settings.density.name")).setDesc(t("settings.density.desc")).addDropdown((dd) => dd.addOption("cozy", t("settings.density.cozy")).addOption("compact", t("settings.density.compact")).setValue(this.plugin.settings.density).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.density.name")).setDesc(t("settings.density.desc")).addDropdown((dd) => dd.addOption("cozy", t("settings.density.cozy")).addOption("compact", t("settings.density.compact")).setValue(this.plugin.settings.density).onChange(async (v) => {
       this.plugin.settings.density = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.vim.name")).setDesc(t("settings.vim.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.enableVimKeys).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.vim.name")).setDesc(t("settings.vim.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.enableVimKeys).onChange(async (v) => {
       this.plugin.settings.enableVimKeys = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.mood.name")).setDesc(t("settings.mood.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.enableMoodColoring).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.mood.name")).setDesc(t("settings.mood.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.enableMoodColoring).onChange(async (v) => {
       this.plugin.settings.enableMoodColoring = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.smartReview.name")).setDesc(t("settings.smartReview.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.enableSmartReview).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.smartReview.name")).setDesc(t("settings.smartReview.desc")).addToggle((tg) => tg.setValue(this.plugin.settings.enableSmartReview).onChange(async (v) => {
       this.plugin.settings.enableSmartReview = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.language.name")).setDesc(t("settings.language.desc")).addDropdown((dd) => dd.addOption("auto", t("settings.language.auto")).addOption("zh-CN", t("settings.language.zh")).addOption("en-US", t("settings.language.en")).setValue(this.plugin.settings.language).onChange(async (v) => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.language.name")).setDesc(t("settings.language.desc")).addDropdown((dd) => dd.addOption("auto", t("settings.language.auto")).addOption("zh-CN", t("settings.language.zh")).addOption("en-US", t("settings.language.en")).setValue(this.plugin.settings.language).onChange(async (v) => {
       this.plugin.settings.language = v;
       setLang(v);
       await this.plugin.saveSettings();
@@ -4105,7 +5192,7 @@ var MemoriaSettingTab = class extends import_obsidian10.PluginSettingTab {
     desc.appendText(" + ");
     desc.createEl("code", { text: "- HH:MM content" });
     desc.appendText(t("settings.about.p2"));
-    new import_obsidian10.Setting(containerEl).setName(t("settings.repo.name")).setDesc(t("settings.repo.desc")).addButton((btn) => btn.setButtonText(t("settings.repo.btn")).onClick(() => {
+    new import_obsidian12.Setting(containerEl).setName(t("settings.repo.name")).setDesc(t("settings.repo.desc")).addButton((btn) => btn.setButtonText(t("settings.repo.btn")).onClick(() => {
       window.open("https://github.com/gzcm/obsidian-memoria");
     }));
     containerEl.createEl("p", { cls: "setting-item-description", text: t("settings.version", { ver: "2.0.3" }) });
@@ -4113,7 +5200,7 @@ var MemoriaSettingTab = class extends import_obsidian10.PluginSettingTab {
 };
 
 // src/main.ts
-var MemoriaPlugin = class extends import_obsidian11.Plugin {
+var MemoriaPlugin = class extends import_obsidian13.Plugin {
   async onload() {
     await this.loadSettings();
     setLang(this.settings.language);
@@ -4121,27 +5208,31 @@ var MemoriaPlugin = class extends import_obsidian11.Plugin {
     this.registerView(VIEW_TYPE_MEMORIA, (leaf) => new MemoriaView(leaf, this.store, this.settings, () => this.saveSettings()));
     this.registerView(VIEW_TYPE_STATS, (leaf) => new MemoriaStatsView(leaf, this.store));
     this.registerView(VIEW_TYPE_YEAR, (leaf) => new MemoriaYearView(leaf, this.store));
-    this.addRibbonIcon("feather", t("toolbar.more"), () => this.activateView());
-    this.addCommand({ id: "open-memoria", name: t("toolbar.more"), callback: () => this.activateView() });
-    this.addCommand({ id: "open-memoria-stats", name: t("toolbar.statsReport"), callback: () => this.activateStatsView() });
-    this.addCommand({ id: "memoria-quick-capture", name: t("input.submit") + "\uFF08\u5F39\u7A97\uFF09", callback: () => this.quickCapture() });
+    this.registerView(VIEW_TYPE_TRASH, (leaf) => new MemoriaTrashView(leaf, this.store));
+    this.registerView(VIEW_TYPE_TAG_TOOLS, (leaf) => new MemoriaTagToolsView(leaf, this.store));
+    this.addRibbonIcon("feather", t("toolbar.more"), () => this.activateLeaf(VIEW_TYPE_MEMORIA));
+    this.addCommand({ id: "open-memoria", name: t("toolbar.more"), callback: () => this.activateLeaf(VIEW_TYPE_MEMORIA) });
+    this.addCommand({ id: "open-memoria-stats", name: t("toolbar.statsReport"), callback: () => this.activateLeaf(VIEW_TYPE_STATS) });
+    this.addCommand({ id: "open-memoria-trash", name: t("toolbar.openTrashCmd"), callback: () => this.activateLeaf(VIEW_TYPE_TRASH) });
+    this.addCommand({ id: "open-memoria-tag-tools", name: t("toolbar.openTagToolsCmd"), callback: () => this.activateLeaf(VIEW_TYPE_TAG_TOOLS) });
+    this.addCommand({ id: "memoria-quick-capture", name: t("toolbar.quickCaptureCmd", { submit: t("input.submit") }), callback: () => this.quickCapture() });
     this.addCommand({
       id: "memoria-normalize-all",
       name: t("notice.normalizing"),
       callback: () => this.normalizeAll()
     });
     this.registerEvent(this.app.vault.on("modify", (f) => {
-      if (f instanceof import_obsidian11.TFile && this.store.isInFolder(f)) this.store.reloadFile(f);
+      if (f instanceof import_obsidian13.TFile && this.store.isInFolder(f)) this.store.reloadFile(f);
     }));
     this.registerEvent(this.app.vault.on("delete", (f) => {
-      if (f instanceof import_obsidian11.TFile) this.store.removeFile(f.path);
+      if (f instanceof import_obsidian13.TFile) this.store.removeFile(f.path);
     }));
     this.registerEvent(this.app.vault.on("create", (f) => {
-      if (f instanceof import_obsidian11.TFile && this.store.isInFolder(f)) this.store.reloadFile(f);
+      if (f instanceof import_obsidian13.TFile && this.store.isInFolder(f)) this.store.reloadFile(f);
     }));
     this.registerEvent(this.app.vault.on("rename", (f, oldPath) => {
       this.store.removeFile(oldPath);
-      if (f instanceof import_obsidian11.TFile && this.store.isInFolder(f)) this.store.reloadFile(f);
+      if (f instanceof import_obsidian13.TFile && this.store.isInFolder(f)) this.store.reloadFile(f);
     }));
     this.addSettingTab(new MemoriaSettingTab(this.app, this));
   }
@@ -4153,30 +5244,21 @@ var MemoriaPlugin = class extends import_obsidian11.Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
   }
-  async activateView() {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_MEMORIA);
+  /** 激活（或聚焦已存在）的指定类型视图 leaf */
+  async activateLeaf(type) {
+    const existing = this.app.workspace.getLeavesOfType(type);
     if (existing.length) {
       this.app.workspace.revealLeaf(existing[0]);
       return;
     }
     const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type: VIEW_TYPE_MEMORIA, active: true });
-    this.app.workspace.revealLeaf(leaf);
-  }
-  async activateStatsView() {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_STATS);
-    if (existing.length) {
-      this.app.workspace.revealLeaf(existing[0]);
-      return;
-    }
-    const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type: VIEW_TYPE_STATS, active: true });
+    await leaf.setViewState({ type, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
   async normalizeAll() {
     var _a;
     if (!confirm(t("notice.normalizeConfirm"))) return;
-    new import_obsidian11.Notice(t("notice.normalizing"));
+    new import_obsidian13.Notice(t("notice.normalizing"));
     try {
       await this.store.reloadAll();
       const all = this.store.getAll();
@@ -4190,7 +5272,7 @@ var MemoriaPlugin = class extends import_obsidian11.Plugin {
       for (const [filePath, memos] of byFile) {
         memos.sort((a, b) => b.range[0] - a.range[0]);
         const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!(file instanceof import_obsidian11.TFile)) continue;
+        if (!(file instanceof import_obsidian13.TFile)) continue;
         let raw = await this.app.vault.read(file);
         for (const m of memos) {
           const lines = raw.split(/\r?\n/);
@@ -4203,10 +5285,10 @@ var MemoriaPlugin = class extends import_obsidian11.Plugin {
         await this.app.vault.modify(file, raw);
       }
       await this.store.reloadAll();
-      new import_obsidian11.Notice(t("notice.normalizeDone", { n: count }));
+      new import_obsidian13.Notice(t("notice.normalizeDone", { n: count }));
     } catch (e) {
       console.error(e);
-      new import_obsidian11.Notice(t("notice.normalizeFailed", { msg: e instanceof Error ? e.message : String(e) }));
+      new import_obsidian13.Notice(t("notice.normalizeFailed", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
   quickCapture() {
@@ -4232,10 +5314,10 @@ var MemoriaPlugin = class extends import_obsidian11.Plugin {
       }
       try {
         await this.store.addMemo(text);
-        new import_obsidian11.Notice(t("notice.saved"));
+        new import_obsidian13.Notice(t("notice.saved"));
         close();
       } catch (e) {
-        new import_obsidian11.Notice(t("notice.saveFailed", { msg: e instanceof Error ? e.message : String(e) }));
+        new import_obsidian13.Notice(t("notice.saveFailed", { msg: e instanceof Error ? e.message : String(e) }));
       }
     };
     cancelBtn.addEventListener("click", close);

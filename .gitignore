@@ -5,3 +5,7 @@ node_modules/
 
 # Claude Code 本地配置
 .claude/
+
+.vscode/
+
+.tmp/

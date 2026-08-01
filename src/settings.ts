@@ -32,6 +32,16 @@ export class MemoriaSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName(t("settings.promoteFolder.name"))
+      .setDesc(t("settings.promoteFolder.desc"))
+      .addText(tx => tx.setPlaceholder("Memoria/notes").setValue(this.plugin.settings.promoteFolder)
+        .onChange(async v => {
+          // 2026-06-03: 只保存默认目录，不主动创建文件夹；真正创建发生在转正式笔记时，便于定位失败点
+          this.plugin.settings.promoteFolder = v.trim() || "Memoria/notes";
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName(t("settings.sidebarTags.name"))
       .setDesc(t("settings.sidebarTags.desc"))
       .addToggle(tg => tg.setValue(this.plugin.settings.showSidebarTags)

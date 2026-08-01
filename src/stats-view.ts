@@ -14,7 +14,7 @@ export class MemoriaStatsView extends ItemView {
   }
 
   getViewType() { return VIEW_TYPE_STATS; }
-  getDisplayText() { return "Memoria 数据报告"; }
+  getDisplayText() { return t("stats.viewTitle"); }
   getIcon() { return "bar-chart-3"; }
 
   async onOpen() {
@@ -55,7 +55,7 @@ export class MemoriaStatsView extends ItemView {
     const oldest = [...this.memos].sort((a, b) => a.datetime.getTime() - b.datetime.getTime())[0];
     const spanDays = Math.floor((Date.now() - oldest.datetime.getTime()) / (1000 * 60 * 60 * 24)) + 1;
     this.renderBigNum(section, this.memos.length, t("stats.memos"));
-    this.renderBigNum(section, charCount, "字");
+    this.renderBigNum(section, charCount, t("stats.chars"));
     this.renderBigNum(section, activeDays, t("stats.days"));
     this.renderBigNum(section, spanDays, t("stats.dailyGoal"));
   }
@@ -69,31 +69,31 @@ export class MemoriaStatsView extends ItemView {
   private renderYearHeatmap(parent: HTMLElement) {
     const section = parent.createDiv({ cls: "mstat-section" });
     const titleRow = section.createDiv({ cls: "mstat-yh-title-row" });
-    titleRow.createDiv({ cls: "mstat-title", text: "🔥 全年活跃度" });
+    titleRow.createDiv({ cls: "mstat-title", text: t("stats.yearHeatmap") });
 
     const yearNav = titleRow.createDiv({ cls: "mstat-yh-year-nav" });
-    const prevBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": "上一年" } });
+    const prevBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": t("stats.prevYear") } });
     setIcon(prevBtn, "chevron-left");
     const yearBtn = yearNav.createEl("button", { cls: "mstat-yh-year-btn" });
-    const nextBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": "下一年" } });
+    const nextBtn = yearNav.createEl("button", { cls: "mstat-yh-year-arrow", attr: { "aria-label": t("stats.nextYear") } });
     setIcon(nextBtn, "chevron-right");
 
     let currentYear = new Date().getFullYear();
-    yearBtn.setText(`${currentYear} 年`);
+    yearBtn.setText(t("stats.yearLabel", { year: currentYear }));
 
     const heatmapWrap = section.createDiv({ cls: "mstat-yh-wrap" });
     const monthLabels = section.createDiv({ cls: "mstat-yh-monthlabels" });
 
     const monthlyTitleSection = parent.createDiv({ cls: "mstat-section mstat-monthly-title" });
     const monthlyTitleRow = monthlyTitleSection.createDiv({ cls: "mstat-title-row" });
-    monthlyTitleRow.createDiv({ cls: "mstat-title", text: "📅 月度分布" });
+    monthlyTitleRow.createDiv({ cls: "mstat-title", text: t("stats.monthlyTitle") });
     const monthlySubtitle = monthlyTitleRow.createDiv({ cls: "mstat-subtitle" });
     const monthlyWrap = parent.createDiv({ cls: "mstat-monthly-wrap" });
 
     const drawYear = (year: number) => {
       heatmapWrap.empty();
       monthLabels.empty();
-      yearBtn.setText(`${year} 年`);
+      yearBtn.setText(t("stats.yearLabel", { year }));
 
       const dateCounts = new Map<string, number>();
       for (const m of this.memos) {
@@ -126,7 +126,7 @@ export class MemoriaStatsView extends ItemView {
         const { month, week } = monthsSeen[i];
         const next = monthsSeen[i + 1];
         if ((next ? next.week - week : totalCols - week) < 2) continue;
-        const lbl = monthLabels.createDiv({ cls: "mstat-yh-mlabel", text: `${month + 1}月` });
+        const lbl = monthLabels.createDiv({ cls: "mstat-yh-mlabel", text: t("stats.monthLabel", { month: month + 1 }) });
         lbl.style.left = `${week * (CELL_W + GAP)}px`;
       }
 
@@ -140,14 +140,14 @@ export class MemoriaStatsView extends ItemView {
           const inYear = d >= jan1 && d <= lastDay;
           const count = dateCounts.get(dateStr) ?? 0;
           const level = inYear ? (count === 0 ? 0 : count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4) : -1;
-          const cell = colEl.createDiv({ cls: `mstat-yh-cell level-${level}`, attr: { title: inYear ? `${dateStr}  ${count} 条` : "" } });
+          const cell = colEl.createDiv({ cls: `mstat-yh-cell level-${level}`, attr: { title: inYear ? t("stats.dayCount", { date: dateStr, count }) : "" } });
           if (level === -1) cell.style.visibility = "hidden";
         }
       }
 
       this.renderMonthlyForYear(monthlyWrap, year);
       const yearTotal = this.memos.filter(m => m.date.startsWith(`${year}-`)).length;
-      monthlySubtitle.setText(`${year} 年共 ${yearTotal} 条`);
+      monthlySubtitle.setText(t("stats.yearTotal", { year, total: yearTotal }));
     };
 
     const allYears = [...new Set(this.memos.map(m => parseInt(m.date.substring(0, 4))))].sort();
@@ -163,16 +163,16 @@ export class MemoriaStatsView extends ItemView {
     drawYear(currentYear);
 
     const legend = section.createDiv({ cls: "mstat-yh-legend" });
-    legend.createSpan({ text: "少 " });
+    legend.createSpan({ text: t("stats.low") });
     for (let i = 0; i <= 4; i++) legend.createDiv({ cls: `mstat-yh-cell level-${i}` });
-    legend.createSpan({ text: " 多" });
+    legend.createSpan({ text: t("stats.high") });
   }
 
   private renderMonthlyForYear(parent: HTMLElement, year: number) {
     parent.empty();
     const months = Array.from({ length: 12 }, (_, i) => ({
       key: `${year}-${pad(i + 1)}`,
-      label: `${i + 1}月`,
+      label: t("stats.monthLabel", { month: i + 1 }),
       count: 0,
     }));
     for (const m of this.memos) {
@@ -188,7 +188,7 @@ export class MemoriaStatsView extends ItemView {
         cls: "mstat-bar" + (mo.count === maxCount && mo.count > 0 ? " is-max" : ""),
       });
       bar.style.height = `${(mo.count / maxCount) * 100}%`;
-      bar.setAttr("title", `${mo.key}: ${mo.count} 条`);
+      bar.setAttr("title", t("stats.monthBarTitle", { key: mo.key, count: mo.count }));
       col.createDiv({ cls: "mstat-bar-num", text: mo.count > 0 ? String(mo.count) : "" });
       col.createDiv({ cls: "mstat-bar-label", text: mo.label });
     }
@@ -200,7 +200,7 @@ export class MemoriaStatsView extends ItemView {
     if (tagMap.size === 0) return;
 
     const section = parent.createDiv({ cls: "mstat-section" });
-    section.createDiv({ cls: "mstat-title", text: "☁️ 标签云" });
+    section.createDiv({ cls: "mstat-title", text: t("stats.tagCloud") });
 
     const sorted = [...tagMap.entries()].sort((a, b) => b[1] - a[1]);
     const maxCnt = sorted[0][1];
@@ -208,7 +208,7 @@ export class MemoriaStatsView extends ItemView {
     const cloud = section.createDiv({ cls: "mstat-cloud" });
     for (const [tag, cnt] of sorted) {
       const ratio = maxCnt === minCnt ? 1 : (cnt - minCnt) / (maxCnt - minCnt);
-      const span = cloud.createSpan({ cls: "mstat-cloud-tag", text: `#${tag}`, attr: { title: `${cnt} 条` } });
+      const span = cloud.createSpan({ cls: "mstat-cloud-tag", text: `#${tag}`, attr: { title: t("stats.tagCountTitle", { count: cnt }) } });
       span.style.fontSize = `${12 + ratio * 10}px`;
       span.style.opacity = String(0.55 + ratio * 0.45);
     }
@@ -216,12 +216,12 @@ export class MemoriaStatsView extends ItemView {
 
   private renderTopTags(parent: HTMLElement) {
     const section = parent.createDiv({ cls: "mstat-section" });
-    section.createDiv({ cls: "mstat-title", text: "🏷️ 最常用标签 Top 10" });
+    section.createDiv({ cls: "mstat-title", text: t("stats.topTags") });
 
     const tagMap = new Map<string, number>();
     for (const m of this.memos) for (const t of m.tags) if (!RESERVED_TAGS.has(t)) tagMap.set(t, (tagMap.get(t) ?? 0) + 1);
     const top10 = [...tagMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
-    if (top10.length === 0) { section.createDiv({ cls: "mstat-empty", text: "暂无标签" }); return; }
+    if (top10.length === 0) { section.createDiv({ cls: "mstat-empty", text: t("stats.noTags") }); return; }
 
     const maxCnt = top10[0][1];
     const list = section.createDiv({ cls: "mstat-hbar-list" });
@@ -238,8 +238,8 @@ export class MemoriaStatsView extends ItemView {
   private renderHourlyChart(parent: HTMLElement) {
     const section = parent.createDiv({ cls: "mstat-section" });
     const titleRow = section.createDiv({ cls: "mstat-title-row" });
-    titleRow.createDiv({ cls: "mstat-title", text: "⏰ 一天中你什么时候写得最多" });
-    titleRow.createDiv({ cls: "mstat-subtitle", text: `基于 ${this.memos.length} 条历史笔记累计` });
+    titleRow.createDiv({ cls: "mstat-title", text: t("stats.hourlyTitle") });
+    titleRow.createDiv({ cls: "mstat-subtitle", text: t("stats.hourlySub", { n: this.memos.length }) });
 
     const hourly = new Array(24).fill(0);
     for (const m of this.memos) hourly[m.datetime.getHours()]++;
@@ -252,7 +252,7 @@ export class MemoriaStatsView extends ItemView {
         cls: "mstat-bar" + (hourly[h] === maxVal && hourly[h] > 0 ? " is-max" : "") + (hourly[h] === 0 ? " is-empty" : ""),
       });
       bar.style.height = hourly[h] === 0 ? "2px" : `${(hourly[h] / maxVal) * 100}%`;
-      bar.setAttr("title", `${pad(h)}:00 — ${hourly[h]} 条`);
+      bar.setAttr("title", t("stats.hourTitle", { hour: pad(h), count: hourly[h] }));
       col.createDiv({ cls: "mstat-bar-label", text: pad(h) });
     }
 
@@ -263,7 +263,7 @@ export class MemoriaStatsView extends ItemView {
 
   private renderHighlights(parent: HTMLElement) {
     const section = parent.createDiv({ cls: "mstat-section" });
-    section.createDiv({ cls: "mstat-title", text: "🌟 有趣的发现" });
+    section.createDiv({ cls: "mstat-title", text: t("stats.highlights") });
     const list = section.createDiv({ cls: "mstat-fact-list" });
 
     const dateCounts = new Map<string, number>();

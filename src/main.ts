@@ -1,9 +1,11 @@
 import { Notice, Plugin, TFile } from "obsidian";
-import { DEFAULT_SETTINGS, MemoriaSettings, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS, VIEW_TYPE_YEAR } from "./types";
+import { DEFAULT_SETTINGS, MemoriaSettings, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS, VIEW_TYPE_TAG_TOOLS, VIEW_TYPE_TRASH, VIEW_TYPE_YEAR } from "./types";
 import { MemoStore } from "./store";
 import { MemoriaView } from "./view";
 import { MemoriaStatsView } from "./stats-view";
 import { MemoriaYearView } from "./year-view";
+import { MemoriaTrashView } from "./trash-view";
+import { MemoriaTagToolsView } from "./tag-tools-view";
 import { MemoriaSettingTab } from "./settings";
 import { buildMemoBlock } from "./parser";
 import { setLang, t } from "./i18n";
@@ -23,12 +25,16 @@ export default class MemoriaPlugin extends Plugin {
     this.registerView(VIEW_TYPE_MEMORIA, leaf => new MemoriaView(leaf, this.store, this.settings, () => this.saveSettings()));
     this.registerView(VIEW_TYPE_STATS, leaf => new MemoriaStatsView(leaf, this.store));
     this.registerView(VIEW_TYPE_YEAR, leaf => new MemoriaYearView(leaf, this.store));
+    this.registerView(VIEW_TYPE_TRASH, leaf => new MemoriaTrashView(leaf, this.store));
+    this.registerView(VIEW_TYPE_TAG_TOOLS, leaf => new MemoriaTagToolsView(leaf, this.store));
 
-    this.addRibbonIcon("feather", t("toolbar.more"), () => this.activateView());
+    this.addRibbonIcon("feather", t("toolbar.more"), () => this.activateLeaf(VIEW_TYPE_MEMORIA));
 
-    this.addCommand({ id: "open-memoria", name: t("toolbar.more"), callback: () => this.activateView() });
-    this.addCommand({ id: "open-memoria-stats", name: t("toolbar.statsReport"), callback: () => this.activateStatsView() });
-    this.addCommand({ id: "memoria-quick-capture", name: t("input.submit") + "（弹窗）", callback: () => this.quickCapture() });
+    this.addCommand({ id: "open-memoria", name: t("toolbar.more"), callback: () => this.activateLeaf(VIEW_TYPE_MEMORIA) });
+    this.addCommand({ id: "open-memoria-stats", name: t("toolbar.statsReport"), callback: () => this.activateLeaf(VIEW_TYPE_STATS) });
+    this.addCommand({ id: "open-memoria-trash", name: t("toolbar.openTrashCmd"), callback: () => this.activateLeaf(VIEW_TYPE_TRASH) });
+    this.addCommand({ id: "open-memoria-tag-tools", name: t("toolbar.openTagToolsCmd"), callback: () => this.activateLeaf(VIEW_TYPE_TAG_TOOLS) });
+    this.addCommand({ id: "memoria-quick-capture", name: t("toolbar.quickCaptureCmd", { submit: t("input.submit") }), callback: () => this.quickCapture() });
     this.addCommand({
       id: "memoria-normalize-all",
       name: t("notice.normalizing"),
@@ -62,19 +68,12 @@ export default class MemoriaPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private async activateView() {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_MEMORIA);
+  /** 激活（或聚焦已存在）的指定类型视图 leaf */
+  private async activateLeaf(type: string) {
+    const existing = this.app.workspace.getLeavesOfType(type);
     if (existing.length) { this.app.workspace.revealLeaf(existing[0]); return; }
     const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type: VIEW_TYPE_MEMORIA, active: true });
-    this.app.workspace.revealLeaf(leaf);
-  }
-
-  private async activateStatsView() {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_STATS);
-    if (existing.length) { this.app.workspace.revealLeaf(existing[0]); return; }
-    const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type: VIEW_TYPE_STATS, active: true });
+    await leaf.setViewState({ type, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
 

@@ -1,10 +1,10 @@
 import {
   Component, ItemView, MarkdownRenderer, Menu, Notice, Platform, setIcon, TFile, WorkspaceLeaf,
 } from "obsidian";
-import { Memo, MemoriaSettings, RESERVED_TAGS, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS, VIEW_TYPE_YEAR } from "./types";
+import { Memo, MemoriaSettings, MoodType, RESERVED_TAGS, SavedFilter, VIEW_TYPE_MEMORIA, VIEW_TYPE_STATS, VIEW_TYPE_TAG_TOOLS, VIEW_TYPE_TRASH, VIEW_TYPE_YEAR } from "./types";
 import { MemoStore } from "./store";
 import { TagSuggest } from "./tag-suggest";
-import { extractImages, renderImageGrid, showLightbox } from "./image";
+import { extractImages, ImageInfo, renderImageGrid, showLightbox } from "./image";
 import { renderCalendar } from "./calendar";
 import { SearchTokens } from "./types";
 import { normalizeForRender, htmlToMarkdown } from "./parser";
@@ -12,6 +12,7 @@ import { t } from "./i18n";
 import { parseSearch, matchesSearch } from "./search";
 import { detectMood, moodClass } from "./mood";
 import { exportMemos, ExportFormat } from "./export";
+import { stripDisplayTags } from "./tag-rewrite";
 
 interface MemoFilter {
   tag: string | null;
@@ -38,9 +39,16 @@ export class MemoriaView extends ItemView {
   private tagSuggest: TagSuggest | null = null;
   private overviewMode: "heatmap" | "calendar" = "heatmap";
   private editingMemo: Memo | null = null;
+  private activeSavedFilterId: string | null = null;
   private timeOverride: string | null = null;
   private timeOverrideBeforeEdit: string | null = null;
   private timeTickHandle: number | null = null;
+  /**
+   * 性能：memo → 派生渲染结果缓存。
+   * store 每次 reload 都会生成新的 Memo 对象，WeakMap 自动失效，无一致性问题。
+   */
+  private renderCache = new WeakMap<Memo, { bodyText: string; images: ImageInfo[] }>();
+  private moodCache = new WeakMap<Memo, MoodType>();
 
   private sidebarEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
@@ -83,6 +91,14 @@ export class MemoriaView extends ItemView {
     this.childComponent.unload();
   }
 
+  /** 打开（或聚焦已存在）的指定类型视图 leaf */
+  private openLeaf(type: string) {
+    const existing = this.app.workspace.getLeavesOfType(type);
+    if (existing.length) { this.app.workspace.revealLeaf(existing[0]); return; }
+    const leaf = this.app.workspace.getLeaf("tab");
+    void leaf.setViewState({ type, active: true }).then(() => this.app.workspace.revealLeaf(leaf));
+  }
+
   private buildLayout() {
     const root = this.contentEl;
     root.empty();
@@ -110,6 +126,7 @@ export class MemoriaView extends ItemView {
     this.searchEl.addEventListener("input", () => {
       this.filter.keyword = this.searchEl.value.trim();
       this.filter.searchTokens = parseSearch(this.filter.keyword);
+      this.activeSavedFilterId = null;
       this.pageLimit = this.getInitialPageLimit();
       this.renderList();
     });
@@ -123,26 +140,28 @@ export class MemoriaView extends ItemView {
 
     const statsBtn = tools.createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("toolbar.statsReport") } });
     setIcon(statsBtn, "bar-chart-3");
-    statsBtn.addEventListener("click", async () => {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_STATS);
-      if (existing.length) { this.app.workspace.revealLeaf(existing[0]); return; }
-      const leaf = this.app.workspace.getLeaf("tab");
-      await leaf.setViewState({ type: VIEW_TYPE_STATS, active: true });
-      this.app.workspace.revealLeaf(leaf);
-    });
+    statsBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_STATS));
 
     const yearBtn = tools.createEl("button", {
       cls: "memoria-icon-btn",
       attr: { "aria-label": t("toolbar.yearPanorama"), title: t("toolbar.yearPanorama") },
     });
     setIcon(yearBtn, "calendar-days");
-    yearBtn.addEventListener("click", async () => {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_YEAR);
-      if (existing.length) { this.app.workspace.revealLeaf(existing[0]); return; }
-      const leaf = this.app.workspace.getLeaf("tab");
-      await leaf.setViewState({ type: VIEW_TYPE_YEAR, active: true });
-      this.app.workspace.revealLeaf(leaf);
+    yearBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_YEAR));
+
+    const trashBtn = tools.createEl("button", {
+      cls: "memoria-icon-btn",
+      attr: { "aria-label": t("toolbar.trash"), title: t("toolbar.trash") },
     });
+    setIcon(trashBtn, "trash-2");
+    trashBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_TRASH));
+
+    const tagToolsBtn = tools.createEl("button", {
+      cls: "memoria-icon-btn",
+      attr: { "aria-label": t("toolbar.tagTools"), title: t("toolbar.tagTools") },
+    });
+    setIcon(tagToolsBtn, "tags");
+    tagToolsBtn.addEventListener("click", () => this.openLeaf(VIEW_TYPE_TAG_TOOLS));
 
     const densityBtn = tools.createEl("button", {
       cls: "memoria-icon-btn",
@@ -186,7 +205,7 @@ export class MemoriaView extends ItemView {
     const card = parent.createDiv({ cls: "memoria-input-card" });
     this.inputEl = card.createEl("textarea", {
       cls: "memoria-input",
-      attr: { placeholder: "此刻，你在想什么？" },
+      attr: { placeholder: t("input.placeholder") },
     });
     this.tagSuggest = new TagSuggest(this.app, this.inputEl);
 
@@ -240,40 +259,40 @@ export class MemoriaView extends ItemView {
     const toolbar = card.createDiv({ cls: "memoria-input-toolbar" });
     const tools = toolbar.createDiv({ cls: "memoria-input-tools" });
 
-    const tagBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "插入标签 #" } });
+    const tagBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertTag") } });
     setIcon(tagBtn, "hash");
     tagBtn.addEventListener("click", () => this.insertAtCursor("#"));
 
-    const imgBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "插入图片" } });
+    const imgBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertImage") } });
     setIcon(imgBtn, "image");
     imgBtn.addEventListener("click", () => this.pickImageFromDisk());
 
-    const listBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "插入无序列表" } });
+    const listBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertUL") } });
     setIcon(listBtn, "list");
     listBtn.addEventListener("click", () => this.insertListAtCursor("- "));
 
-    const orderedBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "插入有序列表" } });
+    const orderedBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertOL") } });
     setIcon(orderedBtn, "list-ordered");
     orderedBtn.addEventListener("click", () => this.insertOrderedListAtCursor());
 
-    const taskBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "插入任务列表" } });
+    const taskBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertTask") } });
     setIcon(taskBtn, "square-check");
     taskBtn.addEventListener("click", () => this.insertListAtCursor("- [ ] "));
 
-    const tableBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": "插入表格" } });
+    const tableBtn = tools.createEl("button", { cls: "memoria-tool-btn", attr: { "aria-label": t("toolbar.insertTable") } });
     setIcon(tableBtn, "table");
     tableBtn.addEventListener("click", e => { e.stopPropagation(); this.showTablePicker(tableBtn); });
 
-    tools.createSpan({ cls: "memoria-input-hint", text: "Ctrl+Enter · 拖拽/粘贴图片" });
+    tools.createSpan({ cls: "memoria-input-hint", text: t("input.hint") });
 
     const submitWrap = toolbar.createDiv({ cls: "memoria-submit-wrap" });
-    const cancelBtn = submitWrap.createEl("button", { cls: "memoria-cancel-btn memoria-hidden", text: "取消" });
+    const cancelBtn = submitWrap.createEl("button", { cls: "memoria-cancel-btn memoria-hidden", text: t("common.cancel") });
     cancelBtn.addEventListener("click", () => this.exitEditMode());
     this.editBannerEl = cancelBtn;
 
     this.timeChipEl = submitWrap.createDiv({
       cls: "memoria-time-chip",
-      attr: { title: "左键选择时间 · 右键重置为当前时间" },
+      attr: { title: t("input.timeChipTitle") },
     });
     this.timeChipEl.addEventListener("click", e => {
       e.stopPropagation();
@@ -289,7 +308,7 @@ export class MemoriaView extends ItemView {
       if (this.timeOverride === null) this.refreshTimeChip();
     }, 30_000);
 
-    const sendBtn = submitWrap.createEl("button", { cls: "memoria-submit-btn", text: "发送" });
+    const sendBtn = submitWrap.createEl("button", { cls: "memoria-submit-btn", text: t("input.submit") });
     sendBtn.addEventListener("click", () => this.submitMemo());
   }
 
@@ -313,7 +332,7 @@ export class MemoriaView extends ItemView {
     const mm = d.getMinutes().toString().padStart(2, "0");
     const isDateOverridden = this.editingMemo !== null || this.filter.date !== null;
     if (isDateOverridden) {
-      const mmdd = `${d.getMonth() + 1}月${d.getDate()}日`;
+      const mmdd = t("input.dateLabel", { month: d.getMonth() + 1, day: d.getDate() });
       this.timeChipEl.setText(`${mmdd} ${hh}:${mm}`);
     } else {
       this.timeChipEl.setText(`${hh}:${mm}`);
@@ -576,7 +595,7 @@ export class MemoriaView extends ItemView {
     const picker = document.body.createDiv({ cls: "memoria-table-picker" + (isMobile ? " is-mobile" : "") });
     const label = picker.createDiv({
       cls: "memoria-table-picker-label",
-      text: isMobile ? "点击格子直接插入" : "0 × 0",
+      text: isMobile ? t("input.tableInsert") : t("input.tableSize"),
     });
     const grid = picker.createDiv({ cls: "memoria-table-picker-grid" });
     const cells: HTMLElement[][] = [];
@@ -662,10 +681,10 @@ export class MemoriaView extends ItemView {
       const val = this.inputEl.value;
       if (val && !/\n$/.test(val)) this.insertAtCursor("\n" + link + "\n");
       else this.insertAtCursor(link + "\n");
-      new Notice(`图片已保存: ${name}`);
+      new Notice(t("notice.imageSaved", { name }));
     } catch (e: unknown) {
       console.error(e);
-      new Notice("图片保存失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(t("notice.imageFailed", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
 
@@ -703,7 +722,7 @@ export class MemoriaView extends ItemView {
       this.autoResizeInput();
     } catch (e: unknown) {
       console.error(e);
-      new Notice("保存失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(t("notice.saveFailed", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
 
@@ -738,13 +757,13 @@ export class MemoriaView extends ItemView {
     if (this.editingMemo) {
       this.editBannerEl.removeClass("memoria-hidden");
       card?.addClass("is-editing");
-      this.inputEl.setAttr("placeholder", `编辑 ${this.editingMemo.date} ${this.editingMemo.time} 的笔记（Esc 取消）`);
+      this.inputEl.setAttr("placeholder", t("input.editPlaceholder", { date: this.editingMemo.date, time: this.editingMemo.time }));
       this.timeChipEl?.removeClass("memoria-hidden");
       this.refreshTimeChip();
     } else {
       this.editBannerEl.addClass("memoria-hidden");
       card?.removeClass("is-editing");
-      this.inputEl.setAttr("placeholder", "此刻，你在想什么？");
+      this.inputEl.setAttr("placeholder", t("input.placeholder"));
       this.timeChipEl?.removeClass("memoria-hidden");
       this.refreshTimeChip();
     }
@@ -777,8 +796,8 @@ export class MemoriaView extends ItemView {
     }
 
     const statsEl = this.sidebarEl.createDiv({ cls: "memoria-stats" });
-    this.renderStatItem(statsEl, all.length.toString(), "笔记");
-    this.renderStatItem(statsEl, uniqueTags.size.toString(), "标签");
+    this.renderStatItem(statsEl, all.length.toString(), t("stats.memos"));
+    this.renderStatItem(statsEl, uniqueTags.size.toString(), t("stats.tags"));
     this.renderStatItem(statsEl, uniqueDates.size.toString(), t("stats.days"));
 
     this.renderOverview(this.sidebarEl, all);
@@ -806,7 +825,7 @@ export class MemoriaView extends ItemView {
       const actions = row.createDiv({ cls: "memoria-daily-goal-actions" });
       const switchBtn = actions.createEl("button", {
         cls: "memoria-icon-btn memoria-daily-goal-switch",
-        attr: { "aria-label": this.overviewMode === "heatmap" ? "切换为月历" : "切换为热力图" },
+        attr: { "aria-label": this.overviewMode === "heatmap" ? t("toolbar.toCalendar") : t("toolbar.toHeatmap") },
       });
       setIcon(switchBtn, this.overviewMode === "heatmap" ? "calendar" : "activity");
       switchBtn.addEventListener("click", e => {
@@ -820,7 +839,7 @@ export class MemoriaView extends ItemView {
       const actions = row.createDiv({ cls: "memoria-daily-goal-actions" });
       const switchBtn = actions.createEl("button", {
         cls: "memoria-icon-btn memoria-daily-goal-switch",
-        attr: { "aria-label": this.overviewMode === "heatmap" ? "切换为月历" : "切换为热力图" },
+        attr: { "aria-label": this.overviewMode === "heatmap" ? t("toolbar.toCalendar") : t("toolbar.toHeatmap") },
       });
       setIcon(switchBtn, this.overviewMode === "heatmap" ? "calendar" : "activity");
       switchBtn.addEventListener("click", e => {
@@ -830,23 +849,24 @@ export class MemoriaView extends ItemView {
       });
     }
 
-    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: "视图" });
+    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.section.views") });
     const navItems = [
-      { key: "all", icon: "layout-grid", text: "全部笔记", count: all.length },
-      { key: "pinned", icon: "pin", text: "置顶", count: pinnedCount },
-      { key: "starred", icon: "star", text: "收藏", count: starredCount },
-      { key: "today", icon: "calendar", text: "今天" },
-      { key: "week", icon: "calendar-days", text: "本周" },
-      { key: "todo", icon: "square-check", text: "待办", count: openTaskCount },
-      { key: "on-this-day", icon: "history", text: "每日回顾", count: onThisDayCount },
-      { key: "random", icon: "shuffle", text: "随机回顾" },
+      { key: "all", icon: "layout-grid", text: t("sidebar.all"), count: all.length },
+      { key: "pinned", icon: "pin", text: t("sidebar.pinned"), count: pinnedCount },
+      { key: "starred", icon: "star", text: t("sidebar.starred"), count: starredCount },
+      { key: "today", icon: "calendar", text: t("sidebar.today") },
+      { key: "week", icon: "calendar-days", text: t("sidebar.week") },
+      { key: "todo", icon: "square-check", text: t("sidebar.todo"), count: openTaskCount },
+      { key: "on-this-day", icon: "history", text: t("list.presetOnThisDay"), count: onThisDayCount },
+      { key: "random", icon: "shuffle", text: t("sidebar.random") },
     ];
     for (const item of navItems) this.renderNavItem(item.key, item.icon, item.text, item.count);
 
-    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: "检索式" });
-    this.renderNavItem("no-tag", "tag", "无标签", noTagCount);
-    this.renderNavItem("with-image", "image", "有图片", imgCount);
-    this.renderNavItem("with-link", "link", "有链接", linkCount);
+    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.section.search") });
+    this.renderNavItem("no-tag", "tag", t("sidebar.noTag"), noTagCount);
+    this.renderNavItem("with-image", "image", t("sidebar.withImage"), imgCount);
+    this.renderNavItem("with-link", "link", t("sidebar.withLink"), linkCount);
+    this.renderSavedFilters();
 
     const yearCounts = new Map<string, number>();
     for (const m of all) {
@@ -854,7 +874,7 @@ export class MemoriaView extends ItemView {
       yearCounts.set(y, (yearCounts.get(y) ?? 0) + 1);
     }
     if (yearCounts.size) {
-      this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: "年份" });
+      this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.section.years") });
       for (const [y, cnt] of [...yearCounts.entries()].sort((a, b) => b[0] < a[0] ? -1 : 1)) {
         const item = this.sidebarEl.createDiv({
           cls: "memoria-nav-item" + (this.filter.year === y ? " active" : ""),
@@ -865,6 +885,7 @@ export class MemoriaView extends ItemView {
         item.addEventListener("click", () => {
           this.filter.year = this.filter.year === y ? null : y;
           this.filter.preset = "all";
+          this.activeSavedFilterId = null;
           this.pageLimit = this.getInitialPageLimit();
           this.renderAll();
         });
@@ -877,7 +898,7 @@ export class MemoriaView extends ItemView {
       if (tagMap.size) {
         const section = this.sidebarEl.createDiv({ cls: "memoria-sidebar-section memoria-section-collapsible" });
         section.createSpan({ cls: "memoria-section-arrow", text: this.tagsExpanded ? "▾" : "▸" });
-        section.createSpan({ text: ` 标签 (${tagMap.size})` });
+        section.createSpan({ text: `${t("sidebar.section.tags")} (${tagMap.size})` });
         section.addEventListener("click", () => { this.tagsExpanded = !this.tagsExpanded; this.renderSidebar(); });
         if (this.tagsExpanded) {
           this.renderTagTree(this.sidebarEl, this.buildTagTree(tagMap), 0);
@@ -887,7 +908,7 @@ export class MemoriaView extends ItemView {
   }
 
   private renderNavItem(key: string, icon: string, text: string, count?: number) {
-    const active = this.filter.preset === key && !this.filter.tag && !this.filter.year;
+    const active = !this.activeSavedFilterId && this.filter.preset === key && !this.filter.tag && !this.filter.year;
     const item = this.sidebarEl.createDiv({ cls: "memoria-nav-item" + (active ? " active" : "") });
     setIcon(item.createDiv({ cls: "memoria-nav-icon" }), icon);
     item.createSpan({ cls: "memoria-nav-text", text });
@@ -897,10 +918,103 @@ export class MemoriaView extends ItemView {
       this.filter.tag = null;
       this.filter.year = null;
       this.filter.date = null;
+      this.activeSavedFilterId = null;
       if (key === "random") this.filter.randomSeed = Date.now();
       this.pageLimit = this.getInitialPageLimit();
       this.renderAll();
     });
+  }
+
+  private renderSavedFilters() {
+    this.sidebarEl.createDiv({ cls: "memoria-sidebar-section", text: t("sidebar.saveFilter") });
+
+    const saveItem = this.sidebarEl.createDiv({ cls: "memoria-nav-item memoria-save-filter-action" });
+    setIcon(saveItem.createDiv({ cls: "memoria-nav-icon" }), "bookmark-plus");
+    saveItem.createSpan({ cls: "memoria-nav-text", text: t("sidebar.saveCurrentFilter") });
+    saveItem.addEventListener("click", () => this.showSaveFilterModal());
+
+    for (const filter of this.settings.savedFilters ?? []) {
+      const item = this.sidebarEl.createDiv({
+        cls: "memoria-nav-item memoria-saved-filter-item" + (this.activeSavedFilterId === filter.id ? " active" : ""),
+      });
+      setIcon(item.createDiv({ cls: "memoria-nav-icon" }), "bookmark");
+      item.createSpan({ cls: "memoria-nav-text", text: filter.name });
+      const deleteBtn = item.createEl("button", { cls: "memoria-saved-filter-delete", attr: { "aria-label": t("sidebar.deleteFilter") } });
+      setIcon(deleteBtn, "x");
+      item.addEventListener("click", () => this.applySavedFilter(filter));
+      deleteBtn.addEventListener("click", async e => {
+        e.stopPropagation();
+        this.settings.savedFilters = (this.settings.savedFilters ?? []).filter(x => x.id !== filter.id);
+        if (this.activeSavedFilterId === filter.id) this.activeSavedFilterId = null;
+        await this.saveSettings();
+        this.renderSidebar();
+        new Notice(t("notice.filterDeleted"));
+      });
+    }
+  }
+
+  /** 2026-06-03: 保存完整筛选快照，排查结果不一致时优先对照这里和 parseSearch 的输出 */
+  private currentFilterSnapshot(name: string): SavedFilter {
+    return {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      preset: this.filter.preset,
+      tag: this.filter.tag,
+      year: this.filter.year,
+      date: this.filter.date,
+      keyword: this.filter.keyword,
+    };
+  }
+
+  private applySavedFilter(saved: SavedFilter) {
+    this.filter = {
+      tag: saved.tag,
+      year: saved.year,
+      date: saved.date,
+      keyword: saved.keyword,
+      preset: saved.preset || "all",
+      searchTokens: parseSearch(saved.keyword),
+    };
+    this.activeSavedFilterId = saved.id;
+    this.searchEl.value = saved.keyword;
+    this.pageLimit = this.getInitialPageLimit();
+    this.refreshTimeChip();
+    this.renderAll();
+  }
+
+  private showSaveFilterModal() {
+    const backdrop = document.body.createDiv({ cls: "memoria-modal-backdrop" });
+    const modal = backdrop.createDiv({ cls: "memoria-modal memoria-text-modal" });
+    modal.createDiv({ cls: "memoria-modal-title", text: t("filter.saveTitle") });
+    const input = modal.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: { type: "text", placeholder: t("filter.namePlaceholder") },
+      value: this.describeFilterOnly(),
+    });
+    const hint = modal.createDiv({ cls: "memoria-modal-hint" });
+    hint.setText(t("filter.saveHint", { desc: this.describeFilterOnly() }));
+    const btns = modal.createDiv({ cls: "memoria-modal-btns" });
+    const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+    const saveBtn = btns.createEl("button", { text: t("filter.save"), cls: "mod-cta" });
+
+    const close = () => backdrop.remove();
+    const submit = async () => {
+      const name = input.value.trim();
+      if (!name) { new Notice(t("filter.requireName")); return; }
+      this.settings.savedFilters = [...(this.settings.savedFilters ?? []), this.currentFilterSnapshot(name)];
+      await this.saveSettings();
+      close();
+      this.renderSidebar();
+      new Notice(t("notice.filterSaved"));
+    };
+    cancelBtn.addEventListener("click", close);
+    saveBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+    });
+    backdrop.addEventListener("click", e => { if (e.target === backdrop) close(); });
+    setTimeout(() => { input.focus(); input.select(); }, 20);
   }
 
   private renderStatItem(parent: HTMLElement, num: string, label: string) {
@@ -919,6 +1033,7 @@ export class MemoriaView extends ItemView {
         onPickDate: date => {
           this.filter.date = this.filter.date === date ? null : date;
           this.filter.preset = "all";
+          this.activeSavedFilterId = null;
           this.pageLimit = this.getInitialPageLimit();
           this.refreshTimeChip();
           this.renderAll();
@@ -964,7 +1079,7 @@ export class MemoriaView extends ItemView {
         row.createSpan({ cls: "memoria-heatmap-tooltip-text", text: m.content.split("\n")[0] });
       }
       if (dayMemos.length > 3) {
-        tooltip.createDiv({ cls: "memoria-heatmap-tooltip-more", text: `...还有 ${dayMemos.length - 3} 条` });
+        tooltip.createDiv({ cls: "memoria-heatmap-tooltip-more", text: t("stats.moreCount", { n: dayMemos.length - 3 }) });
       }
       const rect = cell.getBoundingClientRect();
       tooltip.style.left = `${Math.round(rect.right + 8)}px`;
@@ -986,7 +1101,7 @@ export class MemoriaView extends ItemView {
         const level = count === 0 ? 0 : count < 2 ? 1 : count < 4 ? 2 : count < 7 ? 3 : 4;
         const cell = colEl.createDiv({
           cls: `memoria-heatmap-cell level-${level}`,
-          attr: { title: count > 0 ? "" : `${dateStr}  0 条` },
+          attr: { title: count > 0 ? "" : t("stats.dayCount", { date: dateStr, count: 0 }) },
         });
         if (count > 0) {
           cell.addEventListener("mouseenter", () => showTooltip(cell, dateStr, count));
@@ -1037,6 +1152,7 @@ export class MemoriaView extends ItemView {
       item.addEventListener("click", () => {
         this.filter.tag = this.filter.tag === child.full ? null : child.full;
         this.filter.preset = "all";
+        this.activeSavedFilterId = null;
         this.pageLimit = this.getInitialPageLimit();
         this.renderAll();
       });
@@ -1099,7 +1215,7 @@ export class MemoriaView extends ItemView {
     if (this.filter.preset === "random") {
       const rerollBtn = meta.createEl("button", { cls: "memoria-meta-btn" });
       setIcon(rerollBtn.createSpan(), "shuffle");
-      rerollBtn.createSpan({ text: " 换一批" });
+      rerollBtn.createSpan({ text: t("meta.reroll") });
       rerollBtn.addEventListener("click", () => { this.filter.randomSeed = Date.now(); this.renderList(); });
     }
 
@@ -1129,7 +1245,7 @@ export class MemoriaView extends ItemView {
       const group = this.listEl.createDiv({ cls: "memoria-day-group memoria-pin-group" });
       const head = group.createDiv({ cls: "memoria-day-head memoria-pin-head" });
       setIcon(head.createSpan({ cls: "memoria-pin-head-icon" }), "pin");
-      head.createSpan({ text: `置顶  共 ${pinned.length} 条` });
+      head.createSpan({ text: t("list.pinnedHead", { n: pinned.length }) });
       for (const m of pinned) this.renderMemoCard(group, m);
     }
 
@@ -1144,44 +1260,66 @@ export class MemoriaView extends ItemView {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = toDateStr(yesterday);
-    const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
     for (const [date, dayMemos] of byDate) {
       const group = this.listEl.createDiv({ cls: "memoria-day-group" });
       const head = group.createDiv({ cls: "memoria-day-head" });
-      const wd = weekdays[new Date(date + "T00:00:00").getDay()];
+      const wd = t(`weekday.${new Date(date + "T00:00:00").getDay()}`);
       let label = `${date}  ${wd}`;
-      if (date === todayStr) label = `今天  ${wd}`;
-      else if (date === yesterdayStr) label = `昨天  ${wd}`;
+      if (date === todayStr) label = `${t("date.today")}  ${wd}`;
+      else if (date === yesterdayStr) label = `${t("date.yesterday")}  ${wd}`;
       head.setText(label);
       for (const m of dayMemos) this.renderMemoCard(group, m);
     }
 
     if (this.pageLimit < filtered.length) {
       this.listEl.createDiv({ cls: "memoria-load-more" })
-        .setText(`↓ 滚动加载更多（还有 ${filtered.length - this.pageLimit} 条）`);
+        .setText(t("list.loadMore", { n: filtered.length - this.pageLimit }));
     }
+  }
+
+  private getPresetLabel(preset: string): string {
+    const presetLabels: Record<string, string> = {
+      today: t("sidebar.today"), week: t("sidebar.week"), random: t("sidebar.random"),
+      "on-this-day": t("list.presetOnThisDay"),
+      todo: "📋 " + t("sidebar.todo"),
+      "no-tag": t("sidebar.noTag"), "with-image": t("sidebar.withImage"), "with-link": t("sidebar.withLink"),
+      pinned: t("list.presetPinned"), starred: t("list.presetStarred"),
+    };
+    return presetLabels[preset] ?? preset;
   }
 
   private describeFilter(count: number): string {
     const parts: string[] = [];
-    const presetLabels: Record<string, string> = {
-      today: "今天", week: "本周", random: "随机回顾",
-      "on-this-day": "📅 每日回顾",
-      todo: "📋 待办",
-      "no-tag": "无标签", "with-image": "有图片", "with-link": "有链接",
-      pinned: "📌 置顶", starred: "⭐ 收藏",
-    };
-    if (this.filter.preset !== "all") parts.push(presetLabels[this.filter.preset] ?? this.filter.preset);
+    if (this.filter.preset !== "all") parts.push(this.getPresetLabel(this.filter.preset));
     if (this.filter.year) parts.push(this.filter.year);
     if (this.filter.date) parts.push(`📅 ${this.filter.date}`);
     if (this.filter.tag) parts.push(`#${this.filter.tag}`);
     if (this.filter.keyword) parts.push(`「${this.filter.keyword}」`);
-    return `${parts.length ? parts.join(" · ") + " · " : ""}共 ${count} 条`;
+    return `${parts.length ? parts.join(" · ") + " · " : ""}${t("list.totalCount", { n: count })}`;
   }
 
   private renderMemoCard(parent: HTMLElement, memo: Memo) {
-    const mood = this.settings.enableMoodColoring ? detectMood(memo.content) : "neutral";
+    // 派生字段缓存：内容不变时避免重复 stripTags/extractImages/detectMood
+    let bodyText = "";
+    let images: ImageInfo[] = [];
+    const cached = this.renderCache.get(memo);
+    if (cached) {
+      bodyText = cached.bodyText;
+      images = cached.images;
+    } else {
+      const { text } = this.stripTags(memo.content);
+      const extracted = extractImages(this.app, text, memo.file);
+      bodyText = extracted.text;
+      images = extracted.images;
+      this.renderCache.set(memo, { bodyText, images });
+    }
+    // mood 依赖设置开关，仅在开启时读取/写入缓存，避免开关切换后残留旧值
+    let mood: MoodType = "neutral";
+    if (this.settings.enableMoodColoring) {
+      mood = this.moodCache.get(memo) ?? detectMood(memo.content);
+      this.moodCache.set(memo, mood);
+    }
     const moodCls = mood !== "neutral" ? ` ${moodClass(mood)}` : "";
     const card = parent.createDiv({
       cls: "memoria-card" +
@@ -1197,17 +1335,14 @@ export class MemoriaView extends ItemView {
 
     const head = card.createDiv({ cls: "memoria-card-head" });
     const timeWrap = head.createDiv({ cls: "memoria-card-time-wrap" });
-    if (memo.isPinned) { const pin = timeWrap.createSpan({ cls: "memoria-card-pin" }); setIcon(pin, "pin"); pin.setAttr("aria-label", "已置顶"); }
-    if (memo.isStarred) { const star = timeWrap.createSpan({ cls: "memoria-card-star" }); setIcon(star, "star"); star.setAttr("aria-label", "已收藏"); }
+    if (memo.isPinned) { const pin = timeWrap.createSpan({ cls: "memoria-card-pin" }); setIcon(pin, "pin"); pin.setAttr("aria-label", t("card.pinnedMark")); }
+    if (memo.isStarred) { const star = timeWrap.createSpan({ cls: "memoria-card-star" }); setIcon(star, "star"); star.setAttr("aria-label", t("card.starredMark")); }
     timeWrap.createSpan({ cls: "memoria-card-time", text: `${memo.date} ${memo.time}` });
 
     const moreBtn = head.createDiv({ cls: "memoria-card-actions" })
-      .createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": "更多操作" } });
+      .createEl("button", { cls: "memoria-icon-btn", attr: { "aria-label": t("toolbar.moreActions") } });
     setIcon(moreBtn, "more-horizontal");
     moreBtn.addEventListener("click", e => { e.stopPropagation(); this.showMemoMenu(e, memo); });
-
-    const { text, tags } = this.stripTags(memo.content);
-    const { text: bodyText, images } = extractImages(this.app, text, memo.file);
 
     if (bodyText.trim()) {
       const body = card.createDiv({ cls: "memoria-card-body" });
@@ -1225,19 +1360,19 @@ export class MemoriaView extends ItemView {
           const toggle = body.createDiv({ cls: "memoria-collapse-toggle" });
           const iconSpan = toggle.createSpan({ cls: "memoria-collapse-icon" });
           setIcon(iconSpan, "chevron-down");
-          toggle.createSpan({ text: " 继续阅读" });
+          toggle.createSpan({ text: t("list.readMore") });
           toggle.addEventListener("click", e => {
             e.stopPropagation();
             if (body.hasClass("is-collapsed")) {
               body.removeClass("is-collapsed");
               body.addClass("is-expanded");
               setIcon(iconSpan, "chevron-up");
-              toggle.querySelector(":scope > span:last-child")?.setText(" 收起");
+              toggle.querySelector(":scope > span:last-child")?.setText(t("list.collapse"));
             } else {
               body.addClass("is-collapsed");
               body.removeClass("is-expanded");
               setIcon(iconSpan, "chevron-down");
-              toggle.querySelector(":scope > span:last-child")?.setText(" 继续阅读");
+              toggle.querySelector(":scope > span:last-child")?.setText(t("list.readMore"));
             }
           });
         }
@@ -1245,7 +1380,8 @@ export class MemoriaView extends ItemView {
     }
     if (images.length) renderImageGrid(card, images, idx => showLightbox(images, idx));
 
-    const visibleTags = tags.filter(t => !RESERVED_TAGS.has(t));
+    // 标签直接复用 parseMemos 已提取的 memo.tags，避免渲染时再次解析内容
+    const visibleTags = memo.tags.filter(t => !RESERVED_TAGS.has(t));
     if (visibleTags.length) {
       const tagsEl = card.createDiv({ cls: "memoria-card-tags" });
       for (const t of visibleTags) {
@@ -1253,6 +1389,7 @@ export class MemoriaView extends ItemView {
           .addEventListener("click", () => {
             this.filter.tag = t;
             this.filter.preset = "all";
+            this.activeSavedFilterId = null;
             this.pageLimit = this.getInitialPageLimit();
             this.renderAll();
           });
@@ -1285,7 +1422,7 @@ export class MemoriaView extends ItemView {
         if (idx === -1) return;
         const newContent = memo.content.substring(0, idx) + lines[task.line] + memo.content.substring(idx + original.length);
         try { await this.store.editMemo(memo, newContent); }
-        catch (err) { console.error("[Memoria] 任务勾选失败:", err); new Notice("勾选失败：" + (err instanceof Error ? err.message : String(err))); }
+        catch (err) { console.error("[Memoria] 任务勾选失败:", err); new Notice(t("notice.checkFailed", { msg: err instanceof Error ? err.message : String(err) })); }
       });
     });
   }
@@ -1301,38 +1438,107 @@ export class MemoriaView extends ItemView {
   }
 
   private stripTags(content: string): { text: string; tags: string[] } {
-    const tags: string[] = [];
-    const text = content.replace(/#([A-Za-z0-9_一-鿿][A-Za-z0-9_一-鿿/]*)/g, (_, tag) => {
-      if (!tags.includes(tag)) tags.push(tag);
-      return "";
-    }).split("\n").map(l => l.replace(/\s+$/, "")).join("\n")
-      .replace(/\n{3,}/g, "\n\n").trim();
-    return { text, tags };
+    return stripDisplayTags(content);
   }
 
   private showMemoMenu(e: MouseEvent, memo: Memo) {
     const menu = new Menu();
-    menu.addItem(i => i.setTitle(memo.isPinned ? "取消置顶" : "置顶").setIcon(memo.isPinned ? "pin-off" : "pin")
-      .onClick(async () => { await this.store.togglePinned(memo); new Notice(memo.isPinned ? "已取消置顶" : "✓ 已置顶"); }));
-    menu.addItem(i => i.setTitle(memo.isStarred ? "取消收藏" : "收藏").setIcon(memo.isStarred ? "star-off" : "star")
-      .onClick(async () => { await this.store.toggleStarred(memo); new Notice(memo.isStarred ? "已取消收藏" : "✓ 已收藏"); }));
+    menu.addItem(i => i.setTitle(memo.isPinned ? t("card.unpin") : t("card.pin")).setIcon(memo.isPinned ? "pin-off" : "pin")
+      .onClick(async () => { await this.store.togglePinned(memo); new Notice(memo.isPinned ? t("notice.unpinned") : t("notice.pinned")); }));
+    menu.addItem(i => i.setTitle(memo.isStarred ? t("card.unstar") : t("card.star")).setIcon(memo.isStarred ? "star-off" : "star")
+      .onClick(async () => { await this.store.toggleStarred(memo); new Notice(memo.isStarred ? t("notice.unstarred") : t("notice.starred")); }));
     menu.addSeparator();
-    menu.addItem(i => i.setTitle("编辑").setIcon("pencil").onClick(() => this.enterEditMode(memo)));
-    menu.addItem(i => i.setTitle("引用").setIcon("quote").onClick(() => this.quoteMemo(memo)));
-    menu.addItem(i => i.setTitle("打开原文").setIcon("file-text").onClick(() => this.openInFile(memo)));
-    menu.addItem(i => i.setTitle("复制原文").setIcon("copy").onClick(async () => {
+    menu.addItem(i => i.setTitle(t("card.edit")).setIcon("pencil").onClick(() => this.enterEditMode(memo)));
+    menu.addItem(i => i.setTitle(t("card.quote")).setIcon("quote").onClick(() => this.quoteMemo(memo)));
+    menu.addItem(i => i.setTitle(t("card.promote")).setIcon("file-plus").onClick(() => this.showPromoteMemoModal(memo)));
+    menu.addItem(i => i.setTitle(t("card.openSource")).setIcon("file-text").onClick(() => this.openInFile(memo)));
+    menu.addItem(i => i.setTitle(t("card.copySource")).setIcon("copy").onClick(async () => {
       await navigator.clipboard.writeText(memo.content);
-      new Notice("已复制");
+      new Notice(t("notice.copied"));
     }));
     menu.addSeparator();
-    menu.addItem(i => i.setTitle("删除").setIcon("trash").onClick(async () => {
-      if (await this.confirmAsync("确定删除这条笔记吗？")) {
+    menu.addItem(i => i.setTitle(t("card.delete")).setIcon("trash").onClick(async () => {
+      if (await this.confirmAsync(t("notice.confirmDelete"))) {
         await this.store.deleteMemo(memo);
-        new Notice("已删除");
+        new Notice(t("notice.deleted"));
         this.restoreInputFocus();
       }
     }));
     menu.showAtMouseEvent(e);
+  }
+
+  /** 2026-06-03: 转正式笔记只创建新文件，不自动删除原 memo，降低整理功能的误操作风险 */
+  private showPromoteMemoModal(memo: Memo) {
+    const backdrop = document.body.createDiv({ cls: "memoria-modal-backdrop" });
+    const modal = backdrop.createDiv({ cls: "memoria-modal memoria-text-modal" });
+    modal.createDiv({ cls: "memoria-modal-title", text: t("card.promote") });
+
+    const titleLabel = modal.createDiv({ cls: "memoria-modal-label", text: t("promote.title") });
+    const titleInput = modal.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: { type: "text" },
+      value: this.suggestMemoTitle(memo),
+    });
+    titleLabel.setAttr("for", "memoria-promote-title");
+    titleInput.id = "memoria-promote-title";
+
+    const folderLabel = modal.createDiv({ cls: "memoria-modal-label", text: t("promote.folder") });
+    const folderInput = modal.createEl("input", {
+      cls: "memoria-modal-input",
+      attr: { type: "text" },
+      value: this.settings.promoteFolder || "Memoria/notes",
+    });
+    folderLabel.setAttr("for", "memoria-promote-folder");
+    folderInput.id = "memoria-promote-folder";
+
+    modal.createDiv({ cls: "memoria-modal-hint", text: t("promote.hint") });
+    const btns = modal.createDiv({ cls: "memoria-modal-btns" });
+    const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+    const createBtn = btns.createEl("button", { text: t("promote.create"), cls: "mod-cta" });
+
+    const close = () => backdrop.remove();
+    const submit = async () => {
+      const title = titleInput.value.trim();
+      const folder = folderInput.value.trim() || "Memoria/notes";
+      if (!title) { new Notice(t("promote.requireTitle")); return; }
+      try {
+        this.settings.promoteFolder = folder;
+        await this.saveSettings();
+        const path = await this.store.promoteMemoToNote(memo, title, folder);
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (file instanceof TFile) await this.app.workspace.getLeaf("tab").openFile(file);
+        new Notice(t("promote.created", { path }));
+        close();
+      } catch (e) {
+        new Notice(t("promote.failed", { msg: e instanceof Error ? e.message : String(e) }));
+      }
+    };
+
+    cancelBtn.addEventListener("click", close);
+    createBtn.addEventListener("click", submit);
+    titleInput.addEventListener("keydown", e => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+    });
+    folderInput.addEventListener("keydown", e => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") close();
+    });
+    backdrop.addEventListener("click", e => { if (e.target === backdrop) close(); });
+    setTimeout(() => { titleInput.focus(); titleInput.select(); }, 20);
+  }
+
+  private suggestMemoTitle(memo: Memo): string {
+    const { text } = this.stripTags(memo.content);
+    const first = text.split("\n").map(l => l.trim()).find(Boolean) ?? "Memoria memo";
+    return first
+      .replace(/^[-*]\s+/, "")
+      .replace(/^#+\s+/, "")
+      .replace(/^>\s*/, "")
+      .replace(/!\[\[[^\]]+\]\]/g, "")
+      .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+      .trim()
+      .slice(0, 40) || "Memoria memo";
   }
 
   private async showExportMenu(e: MouseEvent) {
@@ -1359,14 +1565,7 @@ export class MemoriaView extends ItemView {
 
   private describeFilterOnly(): string {
     const parts: string[] = [];
-    const presetLabels: Record<string, string> = {
-      today: t("sidebar.today"), week: t("sidebar.week"), random: t("sidebar.random"),
-      "on-this-day": t("list.presetOnThisDay"),
-      todo: "📋 " + t("sidebar.todo"),
-      "no-tag": t("sidebar.noTag"), "with-image": t("sidebar.withImage"), "with-link": t("sidebar.withLink"),
-      pinned: t("list.presetPinned"), starred: t("list.presetStarred"),
-    };
-    if (this.filter.preset !== "all") parts.push(presetLabels[this.filter.preset] ?? this.filter.preset);
+    if (this.filter.preset !== "all") parts.push(this.getPresetLabel(this.filter.preset));
     if (this.filter.year) parts.push(this.filter.year);
     if (this.filter.date) parts.push(this.filter.date);
     if (this.filter.tag) parts.push(`#${this.filter.tag}`);
@@ -1380,8 +1579,8 @@ export class MemoriaView extends ItemView {
       const modal = backdrop.createDiv({ cls: "memoria-modal memoria-confirm" });
       modal.createDiv({ cls: "memoria-modal-title", text: message });
       const btns = modal.createDiv({ cls: "memoria-modal-btns" });
-      const cancelBtn = btns.createEl("button", { text: "取消" });
-      const confirmBtn = btns.createEl("button", { text: "确认删除", cls: "mod-warning" });
+      const cancelBtn = btns.createEl("button", { text: t("common.cancel") });
+      const confirmBtn = btns.createEl("button", { text: t("notice.confirmDeleteOk"), cls: "mod-warning" });
       const done = (result: boolean) => {
         backdrop.remove();
         document.removeEventListener("keydown", onKey, true);
@@ -1430,7 +1629,7 @@ export class MemoriaView extends ItemView {
     }
     this.inputEl.focus();
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
-    new Notice("已引用，继续补充想法吧");
+    new Notice(t("notice.quoted"));
   }
 }
 

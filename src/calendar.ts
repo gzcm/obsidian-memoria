@@ -1,7 +1,8 @@
 import { setIcon } from "obsidian";
 import { Memo } from "./types";
+import { t } from "./i18n";
 
-const WEEKDAY_CHARS = ["日", "一", "二", "三", "四", "五", "六"];
+const WEEKDAY_KEYS = ["calendar.wd.0", "calendar.wd.1", "calendar.wd.2", "calendar.wd.3", "calendar.wd.4", "calendar.wd.5", "calendar.wd.6"];
 
 export interface CalendarState {
   activeDate: string | null;
@@ -28,18 +29,18 @@ export function renderCalendar(
     el.empty();
 
     const head = el.createDiv({ cls: "memoria-cal-head" });
-    const prevBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": "上个月" } });
+    const prevBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": t("calendar.prevMonth") } });
     setIcon(prevBtn, "chevron-left");
-    head.createDiv({ cls: "memoria-cal-title", text: `${year}年${month + 1}月` })
+    head.createDiv({ cls: "memoria-cal-title", text: t("calendar.title", { year, month: month + 1 }) })
       .addEventListener("click", () => { year = today.getFullYear(); month = today.getMonth(); render(); });
-    const nextBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": "下个月" } });
+    const nextBtn = head.createEl("button", { cls: "memoria-cal-nav", attr: { "aria-label": t("calendar.nextMonth") } });
     setIcon(nextBtn, "chevron-right");
 
     prevBtn.addEventListener("click", () => { month === 0 ? (month = 11, year--) : month--; render(); });
     nextBtn.addEventListener("click", () => { month === 11 ? (month = 0, year++) : month++; render(); });
 
     const weekHead = el.createDiv({ cls: "memoria-cal-week-head" });
-    for (const wd of WEEKDAY_CHARS) weekHead.createDiv({ cls: "memoria-cal-wday", text: wd });
+    for (let w = 0; w < WEEKDAY_KEYS.length; w++) weekHead.createDiv({ cls: "memoria-cal-wday", text: t(WEEKDAY_KEYS[w]) });
 
     const grid = el.createDiv({ cls: "memoria-cal-grid" });
     const firstDay = new Date(year, month, 1);
@@ -57,7 +58,7 @@ export function renderCalendar(
           (count > 0 ? " has-memo" : "") +
           (dateStr === todayStr ? " is-today" : "") +
           (dateStr === state.activeDate ? " is-active" : ""),
-        attr: { title: count > 0 ? `${dateStr}  ${count} 条` : dateStr },
+        attr: { title: count > 0 ? t("stats.dayCount", { date: dateStr, count }) : dateStr },
       });
       cell.createDiv({ cls: "memoria-cal-num", text: String(d) });
       if (count > 0) {

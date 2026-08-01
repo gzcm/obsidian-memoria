@@ -1,4 +1,5 @@
 import { App, TFile } from "obsidian";
+import { t } from "./i18n";
 
 const WIKILINK_IMG_RE = /!\[\[([^\]]+?)(?:\|([^\]]*))?\]\]/g;
 const MD_IMG_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
@@ -77,13 +78,13 @@ export function showLightbox(images: ImageInfo[], initialIndex: number) {
   const img = stage.createEl("img", { cls: "memoria-lightbox-img" });
   const counter = backdrop.createDiv({ cls: "memoria-lightbox-counter" });
   const closeBtn = backdrop.createEl("button", {
-    cls: "memoria-lightbox-close", text: "×", attr: { "aria-label": "关闭" },
+    cls: "memoria-lightbox-close", text: "×", attr: { "aria-label": t("common.close") },
   });
   const prevBtn = backdrop.createEl("button", {
-    cls: "memoria-lightbox-nav memoria-lightbox-prev", text: "‹", attr: { "aria-label": "上一张" },
+    cls: "memoria-lightbox-nav memoria-lightbox-prev", text: "‹", attr: { "aria-label": t("image.prev") },
   });
   const nextBtn = backdrop.createEl("button", {
-    cls: "memoria-lightbox-nav memoria-lightbox-next", text: "›", attr: { "aria-label": "下一张" },
+    cls: "memoria-lightbox-nav memoria-lightbox-next", text: "›", attr: { "aria-label": t("image.next") },
   });
 
   const update = () => {

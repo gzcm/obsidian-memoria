@@ -3556,3 +3556,344 @@
   color: var(--text-normal);
   font-weight: 600;
 }
+
+/* ============================================================
+ * 2026-06-03: 回收站、保存筛选器、转正式笔记新增样式
+ * 这些功能都挂在现有 Memoria 视觉系统下，方便后续排查 UI 回归。
+ * ============================================================ */
+.workspace-leaf-content[data-type="memoria-trash-view"] .view-content {
+  padding: 0 !important;
+  overflow: hidden;
+  background: var(--background-primary) !important;
+}
+
+.memoria-trash-view {
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.memoria-trash-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.memoria-trash-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.memoria-trash-title-icon .svg-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.memoria-trash-actions,
+.memoria-trash-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memoria-trash-search-wrap {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 24px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.memoria-trash-search {
+  flex: 1;
+  border: none !important;
+  background: transparent !important;
+  color: var(--text-normal);
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.memoria-trash-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 24px 64px;
+}
+
+.memoria-trash-card {
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+}
+
+.memoria-trash-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.memoria-trash-card-time {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.memoria-trash-card-source {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+.memoria-trash-card-body {
+  padding-top: 10px;
+  border-top: 1px dashed var(--background-modifier-border);
+}
+
+.memoria-small-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: none !important;
+}
+
+.memoria-small-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.memoria-small-btn.is-danger {
+  color: var(--text-error);
+}
+
+.memoria-small-btn .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.memoria-saved-filter-item {
+  padding-right: 6px;
+}
+
+.memoria-saved-filter-delete {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none !important;
+  background: transparent !important;
+  color: currentColor;
+  opacity: 0.55;
+  cursor: pointer;
+  border-radius: 4px;
+  box-shadow: none !important;
+}
+
+.memoria-saved-filter-delete:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 10%, transparent) !important;
+}
+
+.memoria-saved-filter-delete .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.memoria-text-modal {
+  width: min(460px, 90vw);
+}
+
+.memoria-modal-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: -6px;
+}
+
+.memoria-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  outline: none;
+  box-shadow: none !important;
+}
+
+.memoria-modal-input:focus {
+  border-color: var(--interactive-accent);
+}
+
+.memoria-modal-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+@media (max-width: 700px) {
+  .memoria-trash-header,
+  .memoria-trash-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .memoria-trash-actions,
+  .memoria-trash-card-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+/* 2026-06-03: 标签整理视图，和回收站共用按钮尺寸，单独定义列表密度 */
+.workspace-leaf-content[data-type="memoria-tag-tools-view"] .view-content {
+  padding: 0 !important;
+  overflow: hidden;
+  background: var(--background-primary) !important;
+}
+
+.memoria-tag-tools-view {
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.memoria-tag-tools-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.memoria-tag-tools-title,
+.memoria-tag-tools-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memoria-tag-tools-title {
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.memoria-tag-tools-title-icon .svg-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.memoria-tag-tools-summary {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 24px 0;
+}
+
+.memoria-tag-tools-stat {
+  padding: 5px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  font-size: 12px;
+}
+
+.memoria-tag-tools-search-wrap {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 24px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.memoria-tag-tools-search {
+  flex: 1;
+  border: none !important;
+  background: transparent !important;
+  color: var(--text-normal);
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.memoria-tag-tools-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 24px 64px;
+}
+
+.memoria-tag-tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+}
+
+.memoria-tag-tool-name {
+  font-weight: 600;
+  color: var(--text-normal);
+  word-break: break-all;
+}
+
+.memoria-tag-tool-meta {
+  margin-top: 3px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.memoria-tag-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+@media (max-width: 700px) {
+  .memoria-tag-tools-header,
+  .memoria-tag-tool-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .memoria-tag-tool-actions {
+    justify-content: flex-start;
+  }
+}
